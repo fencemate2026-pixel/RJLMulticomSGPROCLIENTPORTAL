@@ -1,38 +1,21 @@
-# Implementation Plan - Fix Compilation Errors
+# Implementation Plan - Fix Disruptive Automatic Gate Calls
 
-This plan addresses the compilation errors in `PortalRepository.kt` and `GateScheduleManager.kt`, primarily caused by missing dependencies and incorrect DAO/Repository method usages.
+The recent addition of a background worker to "pulse" the gate relay every 2 minutes during operating hours is causing highly disruptive behavior. Specifically, it triggers visible GSM calls or dialer prompts on the user's device, which can interrupt other apps (like Uber, as seen in recent screenshots).
 
 ## Proposed Changes
 
-### Dependencies
-
-#### [MODIFY] [libs.versions.toml](file:///C:/Users/User/AndroidStudioProjects/RJLMulticomSGPROCLIENTPORTAL/gradle/libs.versions.toml)
-- Add `androidxWork = "2.10.0"` to `[versions]`.
-- Add `androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "androidxWork" }` to `[libraries]`.
-
-#### [MODIFY] [build.gradle.kts](file:///C:/Users/User/AndroidStudioProjects/RJLMulticomSGPROCLIENTPORTAL/app/build.gradle.kts)
-- Add `implementation(libs.androidx.work.runtime.ktx)` to the `dependencies` block.
-
-### Data Layer
-
-#### [MODIFY] [Daos.kt](file:///C:/Users/User/AndroidStudioProjects/RJLMulticomSGPROCLIENTPORTAL/app/src/main/java/com/example/rjlmulticomsg_proclientportal/data/local/Daos.kt)
-- Add `suspend fun getByAccountId(accountId: String): List<ScheduleEntity>` to `ScheduleDao`.
-- Add `suspend fun list(accountId: String): List<GsmDeviceEntity>` to `GsmDeviceDao`.
-
-#### [MODIFY] [PortalRepository.kt](file:///C:/Users/User/AndroidStudioProjects/RJLMulticomSGPROCLIENTPORTAL/app/src/main/java/com/example/rjlmulticomsg_proclientportal/data/repo/PortalRepository.kt)
-- Add `suspend fun listGsmDevices(accountId: String): List<GsmDeviceStatus>` to `PortalRepository`.
-
-### Security / WorkManager
+### Security & Background Workers
 
 #### [MODIFY] [GateScheduleManager.kt](file:///C:/Users/User/AndroidStudioProjects/RJLMulticomSGPROCLIENTPORTAL/app/src/main/java/com/example/rjlmulticomsg_proclientportal/security/GateScheduleManager.kt)
-- Fix ambiguity of `Result` by using `androidx.work.ListenableWorker.Result`.
-- Fix `GateRelayPulseWorker` to use `repository.listGsmDevices(accountId)` (suspend call) instead of `observeGsmDevices(accountId).value`.
-- Ensure `runBlocking` handles the suspend calls correctly.
+- **Disable Automatic Calls**: Comment out or remove the `repository.openGsmGate(applicationContext)` call within `GateRelayPulseWorker`.
+- **Add Logging**: Update the worker to log the status but not perform visible actions. This keeps the worker active for future logic (like cloud-based pulses) without disrupting the user now.
+- **Fix Warnings**: Address minor lint warnings (unused parameters, redundant qualifiers).
 
 ## Verification Plan
 
 ### Automated Tests
-- Run `./gradlew :app:assembleDebug` to verify that all compilation errors are resolved.
+- Run `./gradlew :app:assembleDebug` to ensure the project still builds.
 
 ### Manual Verification
-- Verify that the `GateScheduleManager` can be instantiated and its tasks scheduled without runtime crashes (if possible via logs).
+- Deploy the app and monitor Logcat to verify that `GateRelayPulseWorker` runs but does **not** trigger a phone call or dialer.
+- Verify that the app remains in the foreground without being interrupted by the dialer.
