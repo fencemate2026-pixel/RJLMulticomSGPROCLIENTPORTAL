@@ -3,15 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#050506" />
+  <meta name="theme-color" content="#0a1421" />
   <meta name="description" content="Secure RJL Commercial Magic Keys client access portal." />
   <title>Magic Keys | RJL Commercial</title>
   <link rel="icon" href="/rjl-commercial-logo-transparent.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <style>html,body{background:#050506!important;color:#f5f7f9!important}</style>
+  <style>html,body{background:#0a1421!important;color:#f6f9ff!important}</style>
   <link rel="stylesheet" href="/styles.css?v=20260728-core-2" />
   <link rel="stylesheet" href="/tough-tech.css?v=20260728-graphite-red-2" />
   <link rel="stylesheet" href="/vault-sequence.css?v=20260728-vault-open-1" />
+  <link rel="stylesheet" href="/approved-vault-theme.css?v=20260728-approved-1" />
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -115,6 +116,28 @@
 
       <section class="content">
         <header class="topbar"><div><p class="section-kicker">SECURE CLIENT DASHBOARD</p><h1 id="welcomeTitle">Welcome</h1><p class="muted">Your live access information is shown below.</p></div><img class="header-logo" src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></header>
+
+        <section class="command-hero" aria-label="Secure vault system status">
+          <div class="command-hero__copy">
+            <p class="section-kicker">RJL SECURE ACCESS PORTAL</p>
+            <h2>Secure vault online</h2>
+            <p>Advanced security, trusted access and real-time protection for authorised representatives.</p>
+          </div>
+          <div class="command-hero__vault" aria-hidden="true">
+            <div class="vault-frame">
+              <div class="vault-ring ring-a"></div>
+              <div class="vault-ring ring-b"></div>
+              <div class="vault-ring ring-c"></div>
+              <div class="vault-core"></div>
+              <div class="vault-lock">RJL</div>
+            </div>
+          </div>
+          <div class="command-hero__status">
+            <div class="status-module"><span>System status</span><strong class="secure">Secure</strong><div class="status-lights"><i></i><i></i><i></i></div></div>
+            <div class="status-module"><span>Encrypted connection</span><strong>Established</strong><div class="status-lights"><i></i><i></i><i></i></div></div>
+          </div>
+        </section>
+
         <div id="loadingState" class="loading-card glass"><div class="spinner"></div><p>Loading your secure authorisation key…</p></div>
         <div id="errorState" class="loading-card glass hidden"><div><h2>We could not load your key</h2><p id="errorText">Please try again.</p><div class="key-actions centred"><button id="retryButton" class="primary-button small" type="button">Retry</button><button id="goSupportButton" class="secondary-button small" type="button">Open support</button></div></div></div>
 
@@ -151,7 +174,7 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
-  <script src="/vault-sequence.js?v=20260728-vault-open-1"></script>
+  <script src="/vault-sequence.js?v=20260728-vault-open-2"></script>
   <script src="/bootstrap.js?v=20260728-reliability-3"></script>
 </body>
 </html>
