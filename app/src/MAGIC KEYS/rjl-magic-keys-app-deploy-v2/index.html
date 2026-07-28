@@ -10,11 +10,42 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <style>html,body{background:#050506!important;color:#f5f7f9!important}</style>
   <link rel="stylesheet" href="/styles.css?v=20260728-core-2" />
-  <link rel="stylesheet" href="/tough-tech.css?v=20260728-graphite-red-1" />
+  <link rel="stylesheet" href="/tough-tech.css?v=20260728-graphite-red-2" />
+  <link rel="stylesheet" href="/vault-sequence.css?v=20260728-vault-open-1" />
 </head>
 <body>
   <div class="ambient ambient-one"></div>
   <div class="ambient ambient-two"></div>
+
+  <div id="vaultSequence" class="vault-sequence" aria-hidden="true">
+    <div class="vault-sequence__hud">
+      <span>RJL SECURE ACCESS // VAULT NODE 01</span>
+      <strong>ENCRYPTED CONNECTION ACTIVE</strong>
+    </div>
+    <div class="vault-stage" aria-hidden="true">
+      <div class="vault-wall">
+        <div class="vault-interior">
+          <img src="/rjl-commercial-logo-transparent.png" alt="" />
+          <p class="vault-access-text">Access granted</p>
+        </div>
+        <div class="vault-door">
+          <span class="vault-bolt vault-bolt--top"></span>
+          <span class="vault-bolt vault-bolt--right"></span>
+          <span class="vault-bolt vault-bolt--bottom"></span>
+          <span class="vault-bolt vault-bolt--left"></span>
+          <div class="vault-wheel">
+            <span class="vault-wheel-spoke"></span>
+            <span class="vault-wheel-spoke"></span>
+          </div>
+          <span class="vault-hub"></span>
+        </div>
+      </div>
+    </div>
+    <div class="vault-status">
+      <div class="vault-status__bar"></div>
+      <span id="vaultSequenceStatus" class="vault-status__text">Identity verified // releasing security locks</span>
+    </div>
+  </div>
 
   <main class="shell">
     <section id="authView" class="auth-layout">
@@ -120,6 +151,7 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+  <script src="/vault-sequence.js?v=20260728-vault-open-1"></script>
   <script src="/bootstrap.js?v=20260728-reliability-2"></script>
 </body>
 </html>
