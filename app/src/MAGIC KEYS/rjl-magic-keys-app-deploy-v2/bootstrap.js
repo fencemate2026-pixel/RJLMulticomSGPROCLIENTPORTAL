@@ -1,6 +1,6 @@
 (() => {
   const appScript = document.createElement('script');
-  appScript.src = '/app.js?v=20260728-5';
+  appScript.src = '/app.js?v=20260728-reliability-7';
   appScript.defer = true;
   appScript.onerror = () => {
     document.getElementById('loadingState')?.classList.add('hidden');
