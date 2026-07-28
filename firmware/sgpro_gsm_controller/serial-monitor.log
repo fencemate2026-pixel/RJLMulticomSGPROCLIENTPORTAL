@@ -1,0 +1,9 @@
+HTTP GET /gsm/device/device_commercial_bc_01/whitelist Ã¢â€ â€™ 200
+Whitelist saved slot=1 v1785088489 n=1
+Whitelist active v1785088489 n=1
+HTTP GET /gsm/device/device_commercial_bc_01/whitelist Ã¢â€ â€™ 200
+Whitelist saved slot=0 v1785088489 n=1
+Whitelist active v1785088489 n=1
+HTTP GET /gsm/device/device_commercial_bc_01/whitelist Ã¢â€ â€™ 200
+Whitelist saved slot=1 v1785088489 n=1
+Whitelist active v1785088489 n=1

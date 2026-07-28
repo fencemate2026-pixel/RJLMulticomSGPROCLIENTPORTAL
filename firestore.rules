@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function isRjlAdmin() {
+      return signedIn()
+        && request.auth.token.keys().hasAny(['rjlAdmin'])
+        && request.auth.token.rjlAdmin == true;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/clientUsers/$(uid())).data;
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/clientUsers/$(uid()));
+    }
+
+    function userAccountId() {
+      return userDoc().accountId;
+    }
+
+    function userEnabled() {
+      return userDocExists() && userDoc().enabled == true;
+    }
+
+    function isOwnerOf(accountId) {
+      return userEnabled()
+        && userDoc().accountId == accountId
+        && userDoc().role == 'OWNER';
+    }
+
+    function belongsToAccount(accountId) {
+      return userEnabled() && userDoc().accountId == accountId;
+    }
+
+    function unchanged(field) {
+      return !(field in request.resource.data)
+        || request.resource.data[field] == resource.data[field];
+    }
+
+    // ── clientUsers ────────────────────────────────────────────────────────
+    match /clientUsers/{userId} {
+      allow read: if signedIn() && (uid() == userId || isRjlAdmin());
+
+      // Self-create only for bootstrap (debug) with locked privileged shape;
+      // Owner may create MEMBER docs for their account (family invite).
+      allow create: if isRjlAdmin()
+        || (signedIn()
+            && uid() == userId
+            && request.resource.data.keys().hasAll(['accountId', 'email', 'role', 'enabled'])
+            && request.resource.data.role in ['OWNER', 'MEMBER']
+            && request.resource.data.enabled == true)
+        || (signedIn()
+            && userEnabled()
+            && userDoc().role == 'OWNER'
+            && request.resource.data.accountId == userDoc().accountId
+            && request.resource.data.role == 'MEMBER'
+            && request.resource.data.enabled == true);
+
+      // Users must not change their own accountId, role, enabled, or modules.
+      // Owners may update members on the same account (not themselves for role/enabled elevation).
+      allow update: if isRjlAdmin()
+        || (signedIn()
+            && uid() == userId
+            && unchanged('accountId')
+            && unchanged('role')
+            && unchanged('enabled')
+            && unchanged('modules')
+            && unchanged('email'))
+        || (signedIn()
+            && userEnabled()
+            && userDoc().role == 'OWNER'
+            && resource.data.accountId == userDoc().accountId
+            && request.resource.data.accountId == resource.data.accountId
+            && request.resource.data.role in ['MEMBER', 'OWNER']
+            && uid() != userId);
+
+      allow delete: if isRjlAdmin()
+        || (signedIn()
+            && userEnabled()
+            && userDoc().role == 'OWNER'
+            && resource.data.accountId == userDoc().accountId
+            && resource.data.role == 'MEMBER'
+            && uid() != userId);
+    }
+
+    // ── clientAccounts ─────────────────────────────────────────────────────
+    match /clientAccounts/{accountId} {
+      allow read: if isRjlAdmin() || belongsToAccount(accountId);
+
+      allow create: if isRjlAdmin();
+
+      // Owner may update site presentation + modules + whitelistVersion.
+      // Must not change RJL-provisioned connectivity fields or enabled.
+      allow update: if isRjlAdmin()
+        || (isOwnerOf(accountId)
+            && unchanged('gsmNumber')
+            && unchanged('portalBaseUrl')
+            && unchanged('wifiHost')
+            && unchanged('openPath')
+            && unchanged('enabled'));
+
+      allow delete: if isRjlAdmin();
+
+      match /gsmCallers/{callerId} {
+        allow read: if isRjlAdmin() || belongsToAccount(accountId);
+        allow create, update, delete: if isRjlAdmin() || isOwnerOf(accountId);
+      }
+
+      // Device status + call logs: written only by Admin SDK (Cloud Functions)
+      match /gsmDevices/{deviceId} {
+        allow read: if isRjlAdmin() || belongsToAccount(accountId);
+        allow write: if false;
+      }
+
+      match /gsmCallLogs/{logId} {
+        allow read: if isRjlAdmin() || belongsToAccount(accountId);
+        allow write: if false;
+      }
+    }
+
+    // ── clientActionLogs — append-only ─────────────────────────────────────
+    match /clientActionLogs/{logId} {
+      allow read: if isRjlAdmin()
+        || (signedIn()
+            && userEnabled()
+            && resource.data.accountId == userAccountId());
+
+      allow create: if signedIn()
+        && userEnabled()
+        && request.resource.data.accountId == userAccountId()
+        && request.resource.data.userId == uid()
+        && request.resource.data.keys().hasAll([
+          'accountId', 'userId', 'userEmail', 'action', 'detail', 'success'
+        ]);
+
+      allow update, delete: if false;
+    }
+
+    match /gsmDeviceCredentials/{deviceId} {
+      allow read, write: if false;
+    }
+  }
+}

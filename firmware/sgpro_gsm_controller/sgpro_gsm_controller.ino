@@ -155,7 +155,23 @@ String pendingAtCommand;
 uint32_t lastWhitelistPull = 0;
 uint32_t lastHeartbeat = 0;
 int64_t localWhitelistVersion = -1;
+String localWhitelistChecksum;
 uint32_t secretVersion = 1; // must match gsmDeviceCredentials.secretVersion
+
+int modemSignalStrength = -1;
+bool modemNetworkRegistered = false;
+String modemOperator;
+String modemRadioTechnology;
+struct GnssFix {
+  bool valid = false;
+  double latitude = 0;
+  double longitude = 0;
+  double altitudeMetres = 0;
+  double speedKnots = 0;
+  double headingDegrees = 0;
+  int64_t capturedAtEpoch = 0;
+};
+GnssFix lastGnssFix;
 
 String deviceSecret; // NVS only
 String wifiSsid;     // NVS only
@@ -553,7 +569,117 @@ bool configureModem() {
   // Preserve the production SMS feature after the required data sequence.
   if (!sendATWait("AT+CMGF=1", 5000)) allOk = false;
   if (!sendATWait("AT+CSCS=\"GSM\"", 5000)) allOk = false;
+  // GNSS may already be enabled; failure here must not disable gate/call use.
+  sendATWait("AT+CGPS=1", 5000);
   return allOk;
+}
+
+String responseLineStartingWith(const String &prefix) {
+  int from = 0;
+  while (from < atCommandResponse.length()) {
+    int end = atCommandResponse.indexOf('\n', from);
+    if (end < 0) end = atCommandResponse.length();
+    String line = atCommandResponse.substring(from, end);
+    line.trim();
+    if (line.startsWith(prefix)) return line;
+    from = end + 1;
+  }
+  return "";
+}
+
+bool parseRegistered(const String &line) {
+  const int colon = line.indexOf(':');
+  if (colon < 0) return false;
+  String payload = line.substring(colon + 1);
+  payload.trim();
+  const int lastComma = payload.lastIndexOf(',');
+  String status = lastComma >= 0 ? payload.substring(lastComma + 1) : payload;
+  status.trim();
+  return status == "1" || status == "5";
+}
+
+double gnssDegrees(const String &raw, const String &hemisphere) {
+  if (!raw.length()) return NAN;
+  const double value = raw.toDouble();
+  const int degrees = (int)(value / 100.0);
+  const double minutes = value - degrees * 100.0;
+  if (minutes < 0 || minutes >= 60) return NAN;
+  double result = degrees + minutes / 60.0;
+  if (hemisphere == "S" || hemisphere == "W") result = -result;
+  return result;
+}
+
+bool parseGnssInfo(const String &line) {
+  const int colon = line.indexOf(':');
+  if (colon < 0) return false;
+  String payload = line.substring(colon + 1);
+  payload.trim();
+  String fields[9];
+  int fieldIndex = 0;
+  int start = 0;
+  while (fieldIndex < 9 && start <= payload.length()) {
+    int comma = payload.indexOf(',', start);
+    if (comma < 0) comma = payload.length();
+    fields[fieldIndex] = payload.substring(start, comma);
+    fields[fieldIndex].trim();
+    fieldIndex++;
+    start = comma + 1;
+  }
+  if (fieldIndex < 4 || !fields[0].length() || !fields[2].length()) return false;
+  const double latitude = gnssDegrees(fields[0], fields[1]);
+  const double longitude = gnssDegrees(fields[2], fields[3]);
+  if (isnan(latitude) || isnan(longitude) ||
+      latitude < -90 || latitude > 90 ||
+      longitude < -180 || longitude > 180) return false;
+  lastGnssFix.valid = true;
+  lastGnssFix.latitude = latitude;
+  lastGnssFix.longitude = longitude;
+  if (fieldIndex > 6) lastGnssFix.altitudeMetres = fields[6].toDouble();
+  if (fieldIndex > 7) lastGnssFix.speedKnots = fields[7].toDouble();
+  if (fieldIndex > 8) lastGnssFix.headingDegrees = fields[8].toDouble();
+  lastGnssFix.capturedAtEpoch = (int64_t)time(nullptr);
+  return true;
+}
+
+void queryLiveModemTelemetry() {
+  if (ringPending || hangupPending || relayActive || smsState != SmsState::idle) return;
+
+  if (sendATWait("AT+CSQ", 1500)) {
+    const String line = responseLineStartingWith("+CSQ:");
+    int colon = line.indexOf(':');
+    int comma = line.indexOf(',', colon + 1);
+    if (colon >= 0) {
+      String raw = line.substring(colon + 1, comma >= 0 ? comma : line.length());
+      raw.trim();
+      const int value = raw.toInt();
+      modemSignalStrength = value >= 0 && value <= 31 ? value : -1;
+    }
+  }
+  if (ringPending || hangupPending) return;
+  if (sendATWait("AT+CEREG?", 1500)) {
+    modemNetworkRegistered = parseRegistered(responseLineStartingWith("+CEREG:"));
+  }
+  if (ringPending || hangupPending) return;
+  if (sendATWait("AT+COPS?", 1500)) {
+    String line = responseLineStartingWith("+COPS:");
+    int firstQuote = line.indexOf('"');
+    int secondQuote = firstQuote >= 0 ? line.indexOf('"', firstQuote + 1) : -1;
+    modemOperator =
+        firstQuote >= 0 && secondQuote > firstQuote
+            ? line.substring(firstQuote + 1, secondQuote)
+            : "";
+  }
+  if (ringPending || hangupPending) return;
+  if (sendATWait("AT+CPSI?", 1500)) {
+    modemRadioTechnology = responseLineStartingWith("+CPSI:");
+    if (modemRadioTechnology.length() > 80) {
+      modemRadioTechnology = modemRadioTechnology.substring(0, 80);
+    }
+  }
+  if (ringPending || hangupPending) return;
+  if (sendATWait("AT+CGPSINFO", 2500)) {
+    parseGnssInfo(responseLineStartingWith("+CGPSINFO:"));
+  }
 }
 
 // Ã¢â€â‚¬Ã¢â€â‚¬ Phone Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -968,6 +1094,15 @@ bool pullWhitelist() {
     Serial.println("Whitelist: invalid shape Ã¢â‚¬â€ keeping last-known-good");
     return false;
   }
+  String canonicalCallers;
+  serializeJson(doc["callers"], canonicalCallers);
+  const String expectedChecksum = doc["whitelistChecksum"] | "";
+  const String actualChecksum = sha256Hex(canonicalCallers);
+  if (expectedChecksum.length() != 64 ||
+      !actualChecksum.equalsIgnoreCase(expectedChecksum)) {
+    Serial.println("Whitelist: checksum mismatch - keeping last-known-good");
+    return false;
+  }
 
   // Build TEMP list only; do not touch active callers[] yet
   static CallerEntry temp[MAX_CALLERS];
@@ -1020,6 +1155,23 @@ bool pullWhitelist() {
   for (size_t i = 0; i < n; i++) callers[i] = temp[i];
   callerCount = n;
   localWhitelistVersion = newVer;
+  localWhitelistChecksum = actualChecksum;
+
+  // Download is not "synced" until the committed NVS image is acknowledged.
+  JsonDocument ackDoc;
+  ackDoc["version"] = localWhitelistVersion;
+  ackDoc["callerCount"] = callerCount;
+  ackDoc["whitelistChecksum"] = localWhitelistChecksum;
+  String ackBody;
+  serializeJson(ackDoc, ackBody);
+  String ackResponse;
+  if (!httpSigned(
+          "POST",
+          String("/gsm/device/") + DEVICE_ID + "/whitelist-ack",
+          ackBody,
+          ackResponse)) {
+    Serial.println("Whitelist: applied locally; acknowledgement pending");
+  }
 
   // Lease at most one job. Modem transmission continues non-blockingly in loop().
   if (smsState == SmsState::idle &&
@@ -1043,6 +1195,44 @@ bool pullWhitelist() {
           claimResult["claimedJobIds"].as<JsonArray>().size() == 1) {
         beginSmsJob(jid, phone, msg);
       }
+      break;
+    }
+  }
+
+  // Remote owner test: claim once in the cloud before touching the relay.
+  // This makes the test available from the app without a PC at the controller.
+  if (smsState == SmsState::idle && !ringPending && !hangupPending &&
+      !relayActive && doc["remoteCommands"].is<JsonArray>()) {
+    for (JsonObject command : doc["remoteCommands"].as<JsonArray>()) {
+      const char *commandId = command["commandId"] | "";
+      const char *type = command["type"] | "";
+      if (!commandId[0] || strcmp(type, "remote_gate_test") != 0) continue;
+
+      JsonDocument claimDoc;
+      claimDoc["commandId"] = commandId;
+      String claimBody;
+      serializeJson(claimDoc, claimBody);
+      String claimResponse;
+      JsonDocument claimResult;
+      const bool claimed =
+          httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/command-claim",
+                     claimBody, claimResponse) &&
+          !deserializeJson(claimResult, claimResponse) &&
+          (claimResult["claimed"] | false);
+      if (!claimed) break;
+
+      startRelayPulse();
+      JsonDocument ackDoc;
+      ackDoc["commandId"] = commandId;
+      ackDoc["triggered"] = relayActive;
+      if (!relayActive) ackDoc["error"] = "relay_busy";
+      String ackBody;
+      serializeJson(ackDoc, ackBody);
+      String ackResponse;
+      httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/command-ack",
+                 ackBody, ackResponse);
+      Serial.printf("Remote gate test %s: %s\n", commandId,
+                    relayActive ? "triggered" : "failed");
       break;
     }
   }
@@ -1085,13 +1275,31 @@ void serviceSmsAcknowledgement() {
 
 void sendHeartbeat() {
   ensureWifi();
+  queryLiveModemTelemetry();
   JsonDocument doc;
-  doc["firmwareVersion"] = "3.0.0-prod";
+  doc["firmwareVersion"] = "3.1.0-prod";
   doc["modemModel"] = "SIM7600G-H";
-  doc["networkRegistered"] = true;
+  doc["networkRegistered"] = modemNetworkRegistered;
+  if (modemSignalStrength >= 0) doc["signalStrength"] = modemSignalStrength;
+  if (modemOperator.length()) doc["operator"] = modemOperator;
+  if (modemRadioTechnology.length()) {
+    doc["radioTechnology"] = modemRadioTechnology;
+  }
   doc["whitelistVersion"] = localWhitelistVersion;
+  doc["whitelistChecksum"] = localWhitelistChecksum;
+  doc["whitelistCallerCount"] = callerCount;
   doc["deviceName"] = "SG-PRO GSM Gate";
   doc["uptimeSec"] = millis() / 1000;
+  if (lastGnssFix.valid) {
+    JsonObject location = doc["location"].to<JsonObject>();
+    location["latitude"] = lastGnssFix.latitude;
+    location["longitude"] = lastGnssFix.longitude;
+    location["altitudeMetres"] = lastGnssFix.altitudeMetres;
+    location["speedKnots"] = lastGnssFix.speedKnots;
+    location["headingDegrees"] = lastGnssFix.headingDegrees;
+    location["capturedAtEpoch"] = lastGnssFix.capturedAtEpoch;
+    location["source"] = "SIM7600_GNSS";
+  }
   String body;
   serializeJson(doc, body);
   String resp;

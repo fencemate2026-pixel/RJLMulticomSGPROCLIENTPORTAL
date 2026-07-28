@@ -1,0 +1,6 @@
+- [x] Update `gradle/libs.versions.toml` with WorkManager
+- [x] Update `app/build.gradle.kts` with WorkManager dependency
+- [x] Add missing DAO methods to `Daos.kt`
+- [x] Add `listGsmDevices` to `PortalRepository.kt`
+- [x] Fix errors in `GateScheduleManager.kt`
+- [x] Verify build (Success)

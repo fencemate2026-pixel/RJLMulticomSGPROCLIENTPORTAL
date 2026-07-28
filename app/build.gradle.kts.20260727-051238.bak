@@ -1,0 +1,126 @@
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.devtools.ksp)
+    alias(libs.plugins.jetbrains.kotlin.plugin.serialization)
+    alias(libs.plugins.google.services)
+}
+
+// Grok / xAI key from local.properties or env (never commit the key).
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val xaiApiKey: String =
+    (localProps.getProperty("XAI_API_KEY")
+        ?: System.getenv("XAI_API_KEY")
+        ?: "").replace("\"", "\\\"")
+
+android {
+    namespace = "com.example.rjlmulticomsg_proclientportal"
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
+
+    defaultConfig {
+        // Matches existing Firebase Android app "onlineportal" in rjl-maintenance-app
+        applicationId = "au.com.rjl.onlineportal"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "FIREBASE_PROJECT", "\"iiii-7b9e8\"")
+        buildConfigField("String", "DEMO_PORTAL_URL", "\"http://100.103.206.69:5000\"")
+        buildConfigField("String", "DEMO_GSM_NUMBER", "\"02886390693\"")
+        buildConfigField("String", "XAI_API_KEY", "\"$xaiApiKey\"")
+        buildConfigField("String", "XAI_MODEL", "\"grok-4.5\"")
+        buildConfigField("String", "XAI_BASE_URL", "\"https://api.x.ai/v1\"")
+    }
+
+    buildTypes {
+        debug {
+            buildConfigField("boolean", "ALLOW_DEMO_LOGIN", "true")
+        }
+        release {
+            buildConfigField("boolean", "ALLOW_DEMO_LOGIN", "false")
+            // Demo portal / GSM only used by debug seeders — blank in release
+            buildConfigField("String", "DEMO_PORTAL_URL", "\"\"")
+            buildConfigField("String", "DEMO_GSM_NUMBER", "\"\"")
+            optimization {
+                enable = false
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+}
+
+dependencies {
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.auth)
+    implementation(libs.firebase.firestore)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.accompanist.permissions)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.compose.adaptive)
+    implementation(libs.androidx.compose.adaptive.layout)
+    implementation(libs.androidx.compose.adaptive.navigation3)
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+    implementation(libs.androidx.navigation3.runtime)
+    implementation(libs.androidx.navigation3.ui)
+    implementation(libs.androidx.room.ktx)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.coil.compose)
+    implementation(libs.converter.moshi)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.core)
+    implementation(libs.logging.interceptor)
+    implementation(libs.material)
+    implementation(libs.moshi.kotlin)
+    implementation(libs.okhttp)
+    implementation(libs.play.services.location)
+    implementation(libs.play.services.auth)
+    implementation(libs.retrofit)
+    testImplementation(libs.androidx.core)
+    testImplementation(libs.androidx.junit)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.runner)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    "ksp"(libs.androidx.room.compiler)
+    "ksp"(libs.moshi.kotlin.codegen)
+}

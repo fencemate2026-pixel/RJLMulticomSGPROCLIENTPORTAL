@@ -1,0 +1,16 @@
+{
+  "name": "Magic Keys by RJL Commercial",
+  "short_name": "Magic Keys",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050607",
+  "theme_color": "#08090b",
+  "icons": [
+    {
+      "src": "/rjl-commercial-logo-transparent.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

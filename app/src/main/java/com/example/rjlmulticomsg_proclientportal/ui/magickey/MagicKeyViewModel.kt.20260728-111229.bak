@@ -1,0 +1,76 @@
+package com.example.rjlmulticomsg_proclientportal.ui.magickey
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.rjlmulticomsg_proclientportal.data.remote.MagicKeyApi
+import com.example.rjlmulticomsg_proclientportal.data.remote.MagicKeyNetwork
+import com.example.rjlmulticomsg_proclientportal.data.remote.UnlockRequest
+import com.example.rjlmulticomsg_proclientportal.data.remote.UnlockResponse
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+sealed interface MagicKeyUiState {
+    data object Idle : MagicKeyUiState
+    data object Loading : MagicKeyUiState
+    data class Granted(val result: UnlockResponse) : MagicKeyUiState
+    data class Error(val message: String) : MagicKeyUiState
+}
+
+class MagicKeyViewModel(
+    private val api: MagicKeyApi = MagicKeyNetwork.api
+) : ViewModel() {
+    private val _state = MutableStateFlow<MagicKeyUiState>(MagicKeyUiState.Idle)
+    val state: StateFlow<MagicKeyUiState> = _state.asStateFlow()
+
+    fun verify(rawSecret: String) {
+        if (_state.value == MagicKeyUiState.Loading) return
+        val secret = rawSecret.trim()
+        if (secret.isEmpty()) {
+            _state.value = MagicKeyUiState.Error("Enter your authorised Magic Key.")
+            return
+        }
+        _state.value = MagicKeyUiState.Loading
+        viewModelScope.launch {
+            _state.value = try {
+                val response = api.unlock(UnlockRequest(secret))
+                val body = if (response.isSuccessful) {
+                    response.body()
+                } else {
+                    response.errorBody()?.use {
+                        MagicKeyNetwork.moshi.adapter(UnlockResponse::class.java)
+                            .fromJson(it.string())
+                    }
+                }
+                if (response.isSuccessful && body?.success == true) {
+                    MagicKeyUiState.Granted(body)
+                } else {
+                    MagicKeyUiState.Error(
+                        magicKeyErrorMessage(body?.error, response.code())
+                    )
+                }
+            } catch (_: Exception) {
+                MagicKeyUiState.Error(
+                    "Network error. Check the backend is running and try again."
+                )
+            }
+        }
+    }
+}
+
+fun magicKeyErrorMessage(error: String?, httpCode: Int): String = when {
+    httpCode == 429 || error == "rate_limited" || error == "rate_limit" ->
+        "Too many attempts. Wait a moment before trying again."
+    error == "expired" || error == "key_expired" ->
+        "This Magic Key has expired."
+    error == "revoked" || error == "key_revoked" ->
+        "This Magic Key has been revoked."
+    error == "insufficient_scope" || error == "scope_not_allowed" ->
+        "This Magic Key is not authorised for gate access."
+    error == "not_found_or_revoked" ->
+        "This Magic Key is invalid or has been revoked."
+    httpCode == 401 || httpCode == 404 || error == "not_found" || error == "invalid" ->
+        "This Magic Key is invalid."
+    else -> "Access could not be verified. Please try again."
+}

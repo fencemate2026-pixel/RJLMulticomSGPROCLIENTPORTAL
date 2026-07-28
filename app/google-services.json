@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "204580877625",
+    "project_id": "iiii-7b9e8",
+    "storage_bucket": "iiii-7b9e8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:204580877625:android:a56a0ae1e9d90bc04be4e8",
+        "android_client_info": {
+          "package_name": "au.com.rjl.onlineportal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRQXjktvXLbV_mcQREymJ56Vc2gBl2qQs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

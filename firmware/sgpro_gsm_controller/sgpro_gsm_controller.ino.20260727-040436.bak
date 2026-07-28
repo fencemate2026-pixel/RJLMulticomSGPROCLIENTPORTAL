@@ -1,0 +1,1112 @@
+﻿/**
+ * RJL Multicom SG-PRO â€” Production controller
+ * ESP32-S3 + Waveshare SIM7600G-H 4G DTU
+ *
+ * FINAL BEHAVIOUR
+ * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * Portal add/delete â†’ Firebase whitelistVersion++
+ * ESP32 polls ~60s â†’ validate temp â†’ atomic activate local list
+ * Incoming call â†’ local list only â†’ AT+CHUP â†’ 3s relay if authorised
+ * Welcome SMS â†’ gsmSmsQueue jobs PENDINGâ†’SENDINGâ†’SENT|FAILED, ack by jobId
+ *
+ * Secrets: provision once via Serial "PROVISION <secret>" â†’ Preferences NVS
+ * Never commit live DEVICE_SECRET to git.
+ *
+ * Libraries: ArduinoJson, Preferences, WiFi, HTTPClient, mbedTLS (built-in ESP32)
+ */
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Preferences.h>
+#include <ArduinoJson.h>
+#include <mbedtls/md.h>
+#include <esp_random.h>
+#include <time.h>
+
+// â”€â”€ Pins (ESP32-S3 Screw Terminal Board) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Silkscreen usually says IO17 / IO18 / IO5 (or G17 / G18 / G5) â€” not "GPIO18".
+//
+//   SIM7600G-H DTU TXD  â†’  board IO18  (ESP32 RX  = MODEM_RX_PIN)
+//   SIM7600G-H DTU RXD  â†’  board IO17  (ESP32 TX  = MODEM_TX_PIN)
+//   SIM7600G-H DTU GND  â†’  board GND
+//   Relay IN            â†’  board IO5
+//   Relay GND           â†’  board GND
+//
+// Power DTU from 12V (7â€“36V), NOT from the ESP32 3V3/5V.
+// If your terminal strip has no IO17/IO18, pick two free UARTable IOs
+// (e.g. IO15/IO16) and change the three numbers below to match the labels.
+constexpr uint8_t MODEM_RX_PIN = 18;  // ESP32 receives from modem TXD
+constexpr uint8_t MODEM_TX_PIN = 17;  // ESP32 sends to modem RXD
+constexpr uint8_t RELAY_PIN = 5;
+constexpr bool RELAY_ACTIVE_LOW = true;
+
+constexpr uint32_t USB_BAUD = 115200;
+constexpr uint32_t MODEM_BAUD = 115200;
+constexpr uint32_t RELAY_PULSE_MS = 3000;
+constexpr uint32_t CALL_LOCKOUT_MS = 10000;
+constexpr uint32_t HIDDEN_CALL_TIMEOUT_MS = 3000;
+constexpr uint32_t WHITELIST_POLL_MS = 60UL * 1000UL;
+constexpr uint32_t HEARTBEAT_MS = 5UL * 60UL * 1000UL;
+constexpr uint32_t SMS_COOLDOWN_MS = 2000;
+
+// â”€â”€ Non-secret firmware config only (safe in source control) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Deployed on project iiii-7b9e8 (Blaze) â€” Cloud Run URL for gen2 function.
+// Classic: https://australia-southeast1-iiii-7b9e8.cloudfunctions.net/gsmDeviceApi
+// See docs/ALTERNATE_PROJECT_DEPLOY.md
+const char *API_BASE =
+    "https://gsmdeviceapi-2vin7lgmjq-ts.a.run.app";
+const char *DEVICE_ID = "device_commercial_bc_01";
+
+static const char GTS_ROOT_R1[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIFVzCCAz+gAwIBAgINAgPlk28xsBNJiGuiFzANBgkqhkiG9w0BAQwFADBHMQsw
+CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU
+MBIGA1UEAxMLR1RTIFJvb3QgUjEwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAw
+MDAwWjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZp
+Y2VzIExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjEwggIiMA0GCSqGSIb3DQEBAQUA
+A4ICDwAwggIKAoICAQC2EQKLHuOhd5s73L+UPreVp0A8of2C+X0yBoJx9vaMf/vo
+27xqLpeXo4xL+Sv2sfnOhB2x+cWX3u+58qPpvBKJXqeqUqv4IyfLpLGcY9vXmX7w
+Cl7raKb0xlpHDU0QM+NOsROjyBhsS+z8CZDfnWQpJSMHobTSPS5g4M/SCYe7zUjw
+TcLCeoiKu7rPWRnWr4+wB7CeMfGCwcDfLqZtbBkOtdh+JhpFAz2weaSUKK0Pfybl
+qAj+lug8aJRT7oM6iCsVlgmy4HqMLnXWnOunVmSPlk9orj2XwoSPwLxAwAtcvfaH
+szVsrBhQf4TgTM2S0yDpM7xSma8ytSmzJSq0SPly4cpk9+aCEI3oncKKiPo4Zor8
+Y/kB+Xj9e1x3+naH+uzfsQ55lVe0vSbv1gHR6xYKu44LtcXFilWr06zqkUspzBmk
+MiVOKvFlRNACzqrOSbTqn3yDsEB750Orp2yjj32JgfpMpf/VjsPOS+C12LOORc92
+wO1AK/1TD7Cn1TsNsYqiA94xrcx36m97PtbfkSIS5r762DL8EGMUUXLeXdYWk70p
+aDPvOmbsB4om3xPXV2V4J95eSRQAogB/mqghtqmxlbCluQ0WEdrHbEg8QOB+DVrN
+VjzRlwW5y0vtOUucxD/SVRNuJLDWcfr0wbrM7Rv1/oFB2ACYPTrIrnqYNxgFlQID
+AQABo0IwQDAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4E
+FgQU5K8rJnEaK0gnhS9SZizv8IkTcT4wDQYJKoZIhvcNAQEMBQADggIBAJ+qQibb
+C5u+/x6Wki4+omVKapi6Ist9wTrYggoGxval3sBOh2Z5ofmmWJyq+bXmYOfg6LEe
+QkEzCzc9zolwFcq1JKjPa7XSQCGYzyI0zzvFIoTgxQ6KfF2I5DUkzps+GlQebtuy
+h6f88/qBVRRiClmpIgUxPoLW7ttXNLwzldMXG+gnoot7TiYaelpkttGsN/H9oPM4
+7HLwEXWdyzRSjeZ2axfG34arJ45JK3VmgRAhpuo+9K4l/3wV3s6MJT/KYnAK9y8J
+ZgfIPxz88NtFMN9iiMG1D53Dn0reWVlHxYciNuaCp+0KueIHoI17eko8cdLiA6Ef
+MgfdG+RCzgwARWGAtQsgWSl4vflVy2PFPEz0tv/bal8xa5meLMFrUKTX5hgUvYU/
+Z6tGn6D/Qqc6f1zLXbBwHSs09dR2CQzreExZBfMzQsNhFRAbd03OIozUhfJFfbdT
+6u9AWpQKXCBfTkBdYiJ23//OYb2MI3jSNwLgjt7RETeJ9r/tSQdirpLsQBqvFAnZ
+0E6yove+7u7Y/9waLd64NnHi/Hm3lCXRSHNboTXns5lndcEZOitHTtNCjv0xyBZm
+2tIMPNuzjsmhDYAPexZ3FL//2wmUspO8IFgV6dtxQ/PeEMMA3KgqlbbC1j+Qa3bb
+bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c
+-----END CERTIFICATE-----
+)EOF";
+// Wi-Fi SSID/password and DEVICE_SECRET are NEVER committed â€” provision via Serial.
+
+// â”€â”€ Runtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+HardwareSerial modem(1);
+Preferences prefs;
+String modemLine;
+
+bool relayActive = false;
+uint32_t relayOffAt = 0;
+bool ringPending = false;
+uint32_t ringStartedAt = 0;
+bool hasHandledCall = false;
+uint32_t lastCallHandledAt = 0;
+uint32_t lastWhitelistPull = 0;
+uint32_t lastHeartbeat = 0;
+int64_t localWhitelistVersion = -1;
+uint32_t secretVersion = 1; // must match gsmDeviceCredentials.secretVersion
+
+String deviceSecret; // NVS only
+String wifiSsid;     // NVS only
+String wifiPass;     // NVS only
+
+constexpr size_t MAX_CALLERS = 120;
+struct CallerEntry {
+  char e164[24];
+  char id[40];
+  char name[40];
+};
+CallerEntry callers[MAX_CALLERS];
+size_t callerCount = 0;
+
+// â”€â”€ Relay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+void setRelay(bool on) {
+  digitalWrite(RELAY_PIN, on ? (RELAY_ACTIVE_LOW ? LOW : HIGH)
+                             : (RELAY_ACTIVE_LOW ? HIGH : LOW));
+}
+void startRelayPulse() {
+  if (relayActive) return; // one pulse per call window
+  relayActive = true;
+  relayOffAt = millis() + RELAY_PULSE_MS;
+  setRelay(true);
+  Serial.println("RELAY: ON (3s)");
+}
+void updateRelay() {
+  if (relayActive && (int32_t)(millis() - relayOffAt) >= 0) {
+    relayActive = false;
+    setRelay(false);
+    Serial.println("RELAY: OFF");
+  }
+}
+
+// â”€â”€ NVS secrets + whitelist â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+void loadCredentialsFromNvs() {
+  prefs.begin("sgpro", true);
+  deviceSecret = prefs.getString("secret", "");
+  secretVersion = prefs.getUInt("secretVer", 1);
+  wifiSsid = prefs.getString("wifiSsid", "");
+  wifiPass = prefs.getString("wifiPass", "");
+  localWhitelistVersion = prefs.getLong64("wl_ver", -1);
+  prefs.end();
+}
+
+bool saveSecretToNvs(const String &secret, uint32_t version = 1) {
+  if (secret.length() < 16) return false;
+  prefs.begin("sgpro", false);
+  prefs.putString("secret", secret);
+  prefs.putUInt("secretVer", version);
+  prefs.end();
+  deviceSecret = secret;
+  secretVersion = version;
+  return true;
+}
+
+bool saveWifiToNvs(const String &ssid, const String &pass) {
+  if (ssid.length() < 1) return false;
+  prefs.begin("sgpro", false);
+  prefs.putString("wifiSsid", ssid);
+  prefs.putString("wifiPass", pass);
+  prefs.end();
+  wifiSsid = ssid;
+  wifiPass = pass;
+  return true;
+}
+
+bool writeWhitelistSlot(
+    uint8_t slot,
+    const CallerEntry *entries,
+    size_t count,
+    int64_t version
+) {
+  const char *nameSpace = slot == 0 ? "sgpro_wl0" : "sgpro_wl1";
+  prefs.begin(nameSpace, false);
+  prefs.clear();
+  prefs.putBool("valid", false);
+  bool ok = prefs.putUInt("count", (uint32_t)count) == sizeof(uint32_t);
+  for (size_t i = 0; i < count && ok; i++) {
+    String k = "c" + String(i);
+    ok = prefs.putString((k + "p").c_str(), entries[i].e164) > 0;
+    prefs.putString((k + "i").c_str(), entries[i].id);
+    prefs.putString((k + "n").c_str(), entries[i].name);
+  }
+  ok = ok && prefs.putLong64("ver", version) == sizeof(int64_t);
+  if (ok) prefs.putBool("valid", true);
+  prefs.end();
+  if (!ok) return false;
+
+  prefs.begin(nameSpace, true);
+  const bool verified =
+      prefs.getBool("valid", false) &&
+      prefs.getUInt("count", UINT32_MAX) == count &&
+      prefs.getLong64("ver", INT64_MIN) == version;
+  prefs.end();
+  return verified;
+}
+
+bool persistWhitelistAtomic(
+    const CallerEntry *entries,
+    size_t count,
+    int64_t version
+) {
+  prefs.begin("sgpro", true);
+  const uint8_t active = prefs.getUChar("wl_slot", 0xFF);
+  prefs.end();
+  const uint8_t target = active == 0 ? 1 : 0;
+
+  if (!writeWhitelistSlot(target, entries, count, version)) {
+    Serial.println("Whitelist: NVS staging failed - keeping last-known-good");
+    return false;
+  }
+
+  prefs.begin("sgpro", false);
+  const bool committed = prefs.putUChar("wl_slot", target) == sizeof(uint8_t);
+  prefs.end();
+  if (!committed) {
+    Serial.println("Whitelist: NVS commit failed - keeping last-known-good");
+    return false;
+  }
+  Serial.printf(
+      "Whitelist saved slot=%u v%lld n=%u\n",
+      target,
+      (long long)version,
+      (unsigned)count);
+  return true;
+}
+
+bool loadWhitelistSlot(uint8_t slot) {
+  const char *nameSpace = slot == 0 ? "sgpro_wl0" : "sgpro_wl1";
+  prefs.begin(nameSpace, true);
+  if (!prefs.getBool("valid", false)) {
+    prefs.end();
+    return false;
+  }
+
+  uint32_t stored = prefs.getUInt("count", UINT32_MAX);
+  if (stored > MAX_CALLERS) {
+    prefs.end();
+    return false;
+  }
+
+  size_t loaded = 0;
+  bool corrupt = false;
+  for (uint32_t i = 0; i < stored; i++) {
+    String k = "c" + String(i);
+    String phone = prefs.getString((k + "p").c_str(), "");
+    if (phone.length() < 8) {
+      corrupt = true;
+      break;
+    }
+    strncpy(callers[loaded].e164, phone.c_str(), sizeof(callers[loaded].e164) - 1);
+    callers[loaded].e164[sizeof(callers[loaded].e164) - 1] = 0;
+    String id = prefs.getString((k + "i").c_str(), "");
+    strncpy(callers[loaded].id, id.c_str(), sizeof(callers[loaded].id) - 1);
+    callers[loaded].id[sizeof(callers[loaded].id) - 1] = 0;
+    String name = prefs.getString((k + "n").c_str(), "");
+    strncpy(callers[loaded].name, name.c_str(), sizeof(callers[loaded].name) - 1);
+    callers[loaded].name[sizeof(callers[loaded].name) - 1] = 0;
+    loaded++;
+  }
+  const int64_t version = prefs.getLong64("ver", INT64_MIN);
+  prefs.end();
+
+  if (corrupt || version == INT64_MIN) return false;
+  callerCount = loaded;
+  localWhitelistVersion = version;
+  Serial.printf(
+      "Whitelist restored slot=%u v%lld n=%u\n",
+      slot,
+      (long long)localWhitelistVersion,
+      (unsigned)callerCount);
+  return true;
+}
+
+bool loadLegacyWhitelistFromNvs() {
+  prefs.begin("sgpro_wl", true);
+  if (!prefs.getBool("valid", false)) {
+    prefs.end();
+    return false;
+  }
+  uint32_t stored = prefs.getUInt("count", 0);
+  if (stored > MAX_CALLERS) stored = MAX_CALLERS;
+  size_t loaded = 0;
+  for (uint32_t i = 0; i < stored; i++) {
+    String k = "c" + String(i);
+    String phone = prefs.getString((k + "p").c_str(), "");
+    if (phone.length() < 8) continue;
+    strncpy(callers[loaded].e164, phone.c_str(), sizeof(callers[loaded].e164) - 1);
+    callers[loaded].e164[sizeof(callers[loaded].e164) - 1] = 0;
+    String id = prefs.getString((k + "i").c_str(), "");
+    strncpy(callers[loaded].id, id.c_str(), sizeof(callers[loaded].id) - 1);
+    callers[loaded].id[sizeof(callers[loaded].id) - 1] = 0;
+    String name = prefs.getString((k + "n").c_str(), "");
+    strncpy(callers[loaded].name, name.c_str(), sizeof(callers[loaded].name) - 1);
+    callers[loaded].name[sizeof(callers[loaded].name) - 1] = 0;
+    loaded++;
+  }
+  const int64_t version = prefs.getLong64("ver", -1);
+  prefs.end();
+  if (version < 0) return false;
+  callerCount = loaded;
+  localWhitelistVersion = version;
+  Serial.printf(
+      "Legacy whitelist restored v%lld n=%u; migrating on next sync\n",
+      (long long)localWhitelistVersion,
+      (unsigned)callerCount);
+  return true;
+}
+
+bool loadWhitelistFromNvs() {
+  prefs.begin("sgpro", true);
+  const uint8_t active = prefs.getUChar("wl_slot", 0xFF);
+  prefs.end();
+
+  if (active <= 1 && loadWhitelistSlot(active)) return true;
+  if (active <= 1 && loadWhitelistSlot(active == 0 ? 1 : 0)) return true;
+  if (loadWhitelistSlot(0) || loadWhitelistSlot(1)) return true;
+  return loadLegacyWhitelistFromNvs();
+}
+
+// â”€â”€ Modem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+void sendAT(const char *cmd) {
+  Serial.print("AT> ");
+  Serial.println(cmd);
+  modem.print(cmd);
+  modem.print("\r\n");
+}
+
+/** Send AT and print any modem reply for ~waitMs (bench diagnostics). */
+void sendATWait(const char *cmd, uint32_t waitMs = 1500) {
+  while (modem.available()) modem.read();
+  sendAT(cmd);
+  String r;
+  uint32_t t0 = millis();
+  while (millis() - t0 < waitMs) {
+    while (modem.available()) {
+      char c = (char)modem.read();
+      r += c;
+      Serial.write(c);
+    }
+    delay(2);
+  }
+  if (r.length() == 0) {
+    Serial.println("  (no reply from modem â€” check power, GND, TX/RX, baud 115200)");
+  }
+}
+
+bool waitForModem() {
+  for (int i = 1; i <= 20; i++) {
+    while (modem.available()) modem.read();
+    modem.print("AT\r\n");
+    String r;
+    uint32_t t0 = millis();
+    while (millis() - t0 < 1000) {
+      while (modem.available()) {
+        char c = (char)modem.read();
+        r += c;
+        Serial.write(c);
+      }
+      delay(2);
+    }
+    if (r.indexOf("OK") >= 0) return true;
+    delay(400);
+  }
+  return false;
+}
+
+void configureModem() {
+  sendAT("ATE0"); delay(150);
+  sendAT("AT+CMEE=2"); delay(150);
+  sendAT("ATS0=0"); delay(150);
+  sendAT("AT+CLIP=1"); delay(150);
+  sendAT("AT+CMGF=1"); delay(150);
+  sendAT("AT+CSCS=\"GSM\""); delay(150);
+  sendAT("AT+CSQ"); delay(150);
+}
+
+// â”€â”€ Phone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+String normalizePhoneNumber(const String &raw) {
+  String cleaned;
+  for (size_t i = 0; i < raw.length(); i++) {
+    char c = raw.charAt(i);
+    if (isDigit((unsigned char)c)) cleaned += c;
+    else if (c == '+' && cleaned.length() == 0) cleaned += c;
+  }
+  if (cleaned.isEmpty()) return "";
+  if (cleaned.startsWith("+")) return cleaned;
+  if (cleaned.startsWith("00")) return "+" + cleaned.substring(2);
+  if (cleaned.startsWith("0")) return "+61" + cleaned.substring(1);
+  if (cleaned.startsWith("61")) return "+" + cleaned;
+  if (cleaned.startsWith("4") && cleaned.length() == 9) return "+61" + cleaned;
+  return cleaned;
+}
+
+String extractCallerNumber(const String &clipLine) {
+  int a = clipLine.indexOf('"');
+  if (a < 0) return "";
+  int b = clipLine.indexOf('"', a + 1);
+  if (b < 0) return "";
+  return clipLine.substring(a + 1, b);
+}
+
+int findCallerIndex(const String &e164) {
+  for (size_t i = 0; i < callerCount; i++) {
+    if (e164.equals(callers[i].e164)) return (int)i;
+  }
+  return -1;
+}
+
+// â”€â”€ SMS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Returns true only after +CMGS: <n> and OK
+bool sendSmsAndWaitCmgs(const char *e164, const char *text, String &cmgsRefOut) {
+  Serial.print("SMS â†’ ");
+  Serial.println(e164);
+  modem.print("AT+CMGS=\"");
+  modem.print(e164);
+  modem.print("\"\r");
+  delay(400);
+  uint32_t t0 = millis();
+  bool prompt = false;
+  while (millis() - t0 < 5000) {
+    while (modem.available()) {
+      char c = (char)modem.read();
+      Serial.write(c);
+      if (c == '>') prompt = true;
+    }
+    if (prompt) break;
+    delay(5);
+  }
+  if (!prompt) return false;
+  modem.print(text);
+  modem.write(26);
+  String resp;
+  t0 = millis();
+  while (millis() - t0 < 15000) {
+    while (modem.available()) {
+      char c = (char)modem.read();
+      resp += c;
+      Serial.write(c);
+    }
+    int p = resp.indexOf("+CMGS:");
+    if (p >= 0 && resp.indexOf("OK") >= 0) {
+      // parse reference
+      int end = resp.indexOf('\n', p);
+      if (end < 0) end = resp.length();
+      cmgsRefOut = resp.substring(p + 6, end);
+      cmgsRefOut.trim();
+      return true;
+    }
+    if (resp.indexOf("ERROR") >= 0) return false;
+    delay(10);
+  }
+  return false;
+}
+
+// â”€â”€ Auth + HTTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+String randomNonceHex(size_t bytes = 12) {
+  String s;
+  for (size_t i = 0; i < bytes; i++) {
+    uint8_t b = (uint8_t)esp_random();
+    char h[3];
+    sprintf(h, "%02x", b);
+    s += h;
+  }
+  return s;
+}
+
+String sha256Hex(const String &value) {
+  byte out[32];
+  mbedtls_md_context_t ctx;
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  mbedtls_md_init(&ctx);
+  mbedtls_md_setup(&ctx, info, 0);
+  mbedtls_md_starts(&ctx);
+  mbedtls_md_update(&ctx, (const unsigned char *)value.c_str(), value.length());
+  mbedtls_md_finish(&ctx, out);
+  mbedtls_md_free(&ctx);
+  char hex[65];
+  for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", out[i]);
+  hex[64] = 0;
+  return String(hex);
+}
+
+String hmacSha256Hex(const String &key, const String &msg) {
+  byte out[32];
+  mbedtls_md_context_t ctx;
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  mbedtls_md_init(&ctx);
+  mbedtls_md_setup(&ctx, info, 1);
+  mbedtls_md_hmac_starts(&ctx, (const unsigned char *)key.c_str(), key.length());
+  mbedtls_md_hmac_update(&ctx, (const unsigned char *)msg.c_str(), msg.length());
+  mbedtls_md_hmac_finish(&ctx, out);
+  mbedtls_md_free(&ctx);
+  char hex[65];
+  for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", out[i]);
+  hex[64] = 0;
+  return String(hex);
+}
+
+bool httpSigned(
+    const char *method,
+    const String &path,
+    const String &body,
+    String &responseOut
+) {
+  if (deviceSecret.length() < 16) {
+    Serial.println("HTTP: no device secret in NVS â€” run PROVISION");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  time_t now = time(nullptr);
+  if (now < 1700000000) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    const uint32_t timeDeadline = millis() + 10000UL;
+    do {
+      delay(100);
+      now = time(nullptr);
+    } while (now < 1700000000 && (int32_t)(millis() - timeDeadline) < 0);
+    if (now < 1700000000) {
+      Serial.println("HTTP: clock not synchronized; request not signed");
+      return false;
+    }
+  }
+  String ts = String((uint64_t)now * 1000ULL);
+  String nonce = randomNonceHex();
+  String signPayload =
+      String(method) + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + body;
+  // Auth v2 uses the provisioned derived hash as the HMAC key; raw secret stays in NVS.
+  String authKey = sha256Hex(deviceSecret + ":" + DEVICE_ID);
+  String sig = hmacSha256Hex(authKey, signPayload);
+
+  String url = String(API_BASE) + path;
+  WiFiClientSecure client;
+  client.setCACert(GTS_ROOT_R1);
+  HTTPClient http;
+  if (!http.begin(client, url)) return false;
+  http.setConnectTimeout(5000);
+  http.setTimeout(10000);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-Id", DEVICE_ID);
+  http.addHeader("X-Auth-Version", "2");
+  http.addHeader("X-Timestamp", ts);
+  http.addHeader("X-Nonce", nonce);
+  http.addHeader("X-Secret-Version", String(secretVersion));
+  http.addHeader("X-Signature", sig);
+
+  int code = (strcmp(method, "GET") == 0) ? http.GET() : http.POST(body);
+  responseOut = http.getString();
+  http.end();
+  Serial.printf("HTTP %s %s â†’ %d\n", method, path.c_str(), code);
+  if (code < 200 || code >= 300) {
+    String diagnostic = responseOut;
+    if (diagnostic.length() > 512) diagnostic = diagnostic.substring(0, 512) + "...";
+    Serial.print("HTTP response: ");
+    Serial.println(diagnostic.length() ? diagnostic : "<empty>");
+  }
+  return code >= 200 && code < 300;
+}
+
+// Prevent overlapping WiFi.begin() ("sta is connecting, cannot set config")
+static bool wifiBusy = false;
+static uint32_t wifiLastAttemptMs = 0;
+
+static void wifiRadioReset() {
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(300);
+  WiFi.mode(WIFI_OFF);
+  delay(400);
+  WiFi.mode(WIFI_STA);
+  delay(200);
+}
+
+void ensureWifi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
+  }
+  if (wifiSsid.length() < 1) {
+    Serial.println("WiFi: not provisioned â€” Serial: WIFI \"ssid\" password");
+    return;
+  }
+  // Cooldown: do not start another begin() while one is in flight
+  if (wifiBusy) {
+    return;
+  }
+  // Rate-limit retries from loop/SYNC (max once per 20s when offline)
+  if (wifiLastAttemptMs != 0 && (millis() - wifiLastAttemptMs) < 20000UL) {
+    return;
+  }
+
+  wifiBusy = true;
+  wifiLastAttemptMs = millis();
+
+  wifiRadioReset();
+  Serial.printf("WiFi: connecting to \"%s\" ...\n", wifiSsid.c_str());
+  wl_status_t beginSt = WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+  if (beginSt == WL_CONNECT_FAILED) {
+    Serial.println("WiFi: begin rejected â€” will retry later");
+    wifiBusy = false;
+    return;
+  }
+
+  for (int i = 0; i < 80; i++) { // ~20s
+    wl_status_t st = WiFi.status();
+    if (st == WL_CONNECTED) {
+      Serial.printf("WiFi: CONNECTED  ip=%s  rssi=%d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      wifiBusy = false;
+      return;
+    }
+    if (st == WL_NO_SSID_AVAIL) {
+      Serial.println("WiFi: SSID not found (is it 2.4GHz and in range?)");
+      wifiRadioReset();
+      wifiBusy = false;
+      return;
+    }
+    if (st == WL_CONNECT_FAILED) {
+      Serial.println("WiFi: connect failed (wrong password?)");
+      wifiRadioReset();
+      wifiBusy = false;
+      return;
+    }
+    delay(250);
+  }
+  Serial.printf("WiFi: timeout status=%d\n", (int)WiFi.status());
+  wifiRadioReset();
+  wifiBusy = false;
+}
+
+/** Force reconnect now (Serial: RECONNECT) â€” ignores cooldown. */
+void forceWifiReconnect() {
+  wifiLastAttemptMs = 0;
+  wifiBusy = false;
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.disconnect(true, false);
+    delay(200);
+  }
+  ensureWifi();
+}
+
+// â”€â”€ Whitelist pull: last-known-good until fully validated â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Do NOT replace working list until: authenticated (HTTP ok) + full download
+// + parse success + validated + save success. Failed/empty body keeps LKG.
+bool pullWhitelist() {
+  ensureWifi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Whitelist: offline â€” keeping last-known-good");
+    return false;
+  }
+
+  String path = String("/gsm/device/") + DEVICE_ID + "/whitelist";
+  String resp;
+  if (!httpSigned("GET", path, "", resp)) {
+    Serial.println("Whitelist: download failed â€” keeping last-known-good");
+    return false;
+  }
+  if (resp.length() < 8) {
+    Serial.println("Whitelist: empty response â€” keeping last-known-good");
+    return false;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, resp)) {
+    Serial.println("Whitelist: parse failed â€” keeping last-known-good");
+    return false;
+  }
+  if (!doc["version"].is<int64_t>() || !doc["callers"].is<JsonArray>()) {
+    Serial.println("Whitelist: invalid shape â€” keeping last-known-good");
+    return false;
+  }
+
+  // Build TEMP list only; do not touch active callers[] yet
+  static CallerEntry temp[MAX_CALLERS];
+  size_t n = 0;
+  bool anyInvalid = false;
+  for (JsonObject c : doc["callers"].as<JsonArray>()) {
+    if (n >= MAX_CALLERS) break;
+    const char *phone = c["phoneNumberE164"] | "";
+    // Production storage is E.164 only
+    if (phone[0] != '+' || strlen(phone) < 9 || strlen(phone) > 16) {
+      anyInvalid = true;
+      continue;
+    }
+    bool digitsOk = true;
+    for (size_t k = 1; phone[k]; k++) {
+      if (phone[k] < '0' || phone[k] > '9') {
+        digitsOk = false;
+        break;
+      }
+    }
+    if (!digitsOk) {
+      anyInvalid = true;
+      continue;
+    }
+    strncpy(temp[n].e164, phone, 23);
+    temp[n].e164[23] = 0;
+    strncpy(temp[n].id, c["id"] | "", 39);
+    temp[n].id[39] = 0;
+    strncpy(temp[n].name, c["name"] | "", 39);
+    temp[n].name[39] = 0;
+    n++;
+  }
+  // Empty callers[] is valid (all deleted). Malformed-only payload with no
+  // valid numbers when server sent entries is treated as failed validation.
+  if (anyInvalid && n == 0 && doc["callers"].as<JsonArray>().size() > 0) {
+    Serial.println("Whitelist: validation failed â€” keeping last-known-good");
+    return false;
+  }
+
+  // Persist and verify the inactive NVS slot before changing the active list.
+  int64_t newVer = doc["version"] | 0;
+  if (!persistWhitelistAtomic(temp, n, newVer)) return false;
+  for (size_t i = 0; i < n; i++) callers[i] = temp[i];
+  callerCount = n;
+  localWhitelistVersion = newVer;
+
+  // SMS jobs (do not block relay path â€” only when online after sync)
+  if (doc["smsJobs"].is<JsonArray>()) {
+    JsonArray jobs = doc["smsJobs"].as<JsonArray>();
+    // Send only jobs explicitly leased to this device by the backend.
+    JsonDocument claimDoc;
+    JsonArray ids = claimDoc["jobIds"].to<JsonArray>();
+    for (JsonObject j : jobs) {
+      const char *jid = j["jobId"] | "";
+      if (jid[0]) ids.add(jid);
+    }
+    JsonDocument claimResult;
+    JsonArray claimedIds;
+    if (ids.size() > 0) {
+      String claimBody;
+      serializeJson(claimDoc, claimBody);
+      String claimResp;
+      if (httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/sms-claim", claimBody, claimResp) &&
+          !deserializeJson(claimResult, claimResp) &&
+          claimResult["claimedJobIds"].is<JsonArray>()) {
+        claimedIds = claimResult["claimedJobIds"].as<JsonArray>();
+      }
+    }
+
+    JsonDocument ackDoc;
+    JsonArray results = ackDoc["results"].to<JsonArray>();
+    for (JsonObject j : jobs) {
+      const char *jid = j["jobId"] | "";
+      const char *phone = j["phoneNumberE164"] | "";
+      const char *msg = j["message"] | "";
+      if (!jid[0] || !phone[0] || !msg[0]) continue;
+      bool leased = false;
+      for (JsonVariant claimed : claimedIds) {
+        if (strcmp(jid, claimed.as<const char *>()) == 0) {
+          leased = true;
+          break;
+        }
+      }
+      if (!leased) {
+        Serial.printf("SMS: job %s not leased â€” skipped\n", jid);
+        continue;
+      }
+      String cmgsRef;
+      bool ok = sendSmsAndWaitCmgs(phone, msg, cmgsRef);
+      JsonObject r = results.add<JsonObject>();
+      r["jobId"] = jid;
+      r["ok"] = ok;
+      r["phoneNumberE164"] = phone;
+      if (ok) r["cmgsReference"] = cmgsRef;
+      else r["error"] = "cmgs_failed";
+      delay(SMS_COOLDOWN_MS);
+    }
+    if (results.size() > 0) {
+      String ackBody;
+      serializeJson(ackDoc, ackBody);
+      String ackResp;
+      httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/sms-ack", ackBody, ackResp);
+    }
+  }
+
+  Serial.printf("Whitelist active v%lld n=%u\n", (long long)localWhitelistVersion, (unsigned)n);
+  return true;
+}
+
+void sendHeartbeat() {
+  ensureWifi();
+  JsonDocument doc;
+  doc["firmwareVersion"] = "3.0.0-prod";
+  doc["modemModel"] = "SIM7600G-H";
+  doc["networkRegistered"] = true;
+  doc["whitelistVersion"] = localWhitelistVersion;
+  doc["deviceName"] = "SG-PRO GSM Gate";
+  doc["uptimeSec"] = millis() / 1000;
+  String body;
+  serializeJson(doc, body);
+  String resp;
+  if (!httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/heartbeat", body, resp)) return;
+  JsonDocument rdoc;
+  if (!deserializeJson(rdoc, resp)) {
+    int64_t srv = rdoc["accountWhitelistVersion"] | 0;
+    if (srv > localWhitelistVersion) lastWhitelistPull = 0;
+  }
+}
+
+struct PendingCallEvent {
+  bool pending = false;
+  String callerNumberE164;
+  bool authorised = false;
+  bool relayTriggered = false;
+  String rejectionReason;
+  String matchedCallerId;
+  String matchedCallerName;
+};
+PendingCallEvent pendingCallEvent;
+
+void queueCallEvent(const String &e164, bool authorised, bool relay, const char *reason, int matchedIdx) {
+  if (pendingCallEvent.pending) {
+    Serial.println("EVENT: previous call event still pending; newest event dropped");
+    return;
+  }
+  pendingCallEvent.pending = true;
+  pendingCallEvent.callerNumberE164 = e164.length() ? e164 : "WITHHELD";
+  pendingCallEvent.authorised = authorised;
+  pendingCallEvent.relayTriggered = relay;
+  pendingCallEvent.rejectionReason = reason;
+  pendingCallEvent.matchedCallerId = matchedIdx >= 0 ? String(callers[matchedIdx].id) : "";
+  pendingCallEvent.matchedCallerName = matchedIdx >= 0 ? String(callers[matchedIdx].name) : "";
+}
+
+void processPendingCallEvent() {
+  if (!pendingCallEvent.pending || relayActive) return;
+  PendingCallEvent event = pendingCallEvent;
+  pendingCallEvent.pending = false;
+  ensureWifi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("EVENT: offline; call event not uploaded");
+    return;
+  }
+  JsonDocument doc;
+  doc["callerNumberE164"] = event.callerNumberE164;
+  doc["authorised"] = event.authorised;
+  doc["relayTriggered"] = event.relayTriggered;
+  doc["rejectionReason"] = event.rejectionReason;
+  if (event.matchedCallerId.length()) {
+    doc["matchedCallerId"] = event.matchedCallerId;
+    doc["matchedCallerName"] = event.matchedCallerName;
+  }
+  String body;
+  serializeJson(doc, body);
+  String response;
+  if (!httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/events", body, response)) {
+    Serial.println("EVENT: upload failed");
+  }
+}
+
+// â”€â”€ Call path (local only â€” never waits for cloud) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+void hangUpCall() { sendAT("AT+CHUP"); }
+
+bool callLockoutActive() {
+  return hasHandledCall && (millis() - lastCallHandledAt < CALL_LOCKOUT_MS);
+}
+
+void handleIncomingCaller(const String &rawNumber) {
+  ringPending = false;
+  if (callLockoutActive()) {
+    hangUpCall();
+    return;
+  }
+  hasHandledCall = true;
+  lastCallHandledAt = millis();
+
+  // Hang up BEFORE relay â€” always
+  hangUpCall();
+
+  if (rawNumber.length() == 0) {
+    Serial.println("REJECT: hidden/withheld");
+    queueCallEvent("", false, false, "WITHHELD", -1);
+    return;
+  }
+  String e164 = normalizePhoneNumber(rawNumber);
+  if (e164.length() == 0 || e164 == "+" || e164.length() < 9) {
+    Serial.println("REJECT: malformed");
+    queueCallEvent(rawNumber, false, false, "MALFORMED", -1);
+    return;
+  }
+  int idx = findCallerIndex(e164);
+  if (idx < 0) {
+    Serial.print("REJECT: unlisted ");
+    Serial.println(e164);
+    queueCallEvent(e164, false, false, "UNLISTED", -1);
+    return;
+  }
+  Serial.print("AUTHORISED ");
+  Serial.println(e164);
+  startRelayPulse(); // single pulse (guarded if already active)
+  queueCallEvent(e164, true, true, "", idx);
+}
+
+void processModemLine(String line) {
+  line.trim();
+  if (!line.length()) return;
+  Serial.print("MODEM: ");
+  Serial.println(line);
+  if (line == "RING") {
+    if (callLockoutActive()) {
+      hangUpCall();
+      return;
+    }
+    if (!ringPending) {
+      ringPending = true;
+      ringStartedAt = millis();
+    }
+    return;
+  }
+  if (line.startsWith("+CLIP:")) {
+    handleIncomingCaller(extractCallerNumber(line));
+    return;
+  }
+  if (line.indexOf("NO CARRIER") >= 0 || line.indexOf("BUSY") >= 0) ringPending = false;
+}
+
+void readModem() {
+  while (modem.available()) {
+    char c = (char)modem.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      if (modemLine.length()) {
+        processModemLine(modemLine);
+        modemLine = "";
+      }
+      continue;
+    }
+    if (modemLine.length() < 255) modemLine += c;
+    else modemLine = "";
+  }
+}
+
+void rejectHiddenAfterTimeout() {
+  if (!ringPending) return;
+  if (millis() - ringStartedAt < HIDDEN_CALL_TIMEOUT_MS) return;
+  handleIncomingCaller("");
+}
+
+// Parse next token: "quoted value" or unquoted until space. Advances `from`.
+static String nextToken(const String &s, int &from) {
+  while (from < (int)s.length() && s.charAt(from) == ' ') from++;
+  if (from >= (int)s.length()) return "";
+  if (s.charAt(from) == '"') {
+    from++;
+    int end = s.indexOf('"', from);
+    if (end < 0) end = s.length();
+    String out = s.substring(from, end);
+    from = end + 1;
+    return out;
+  }
+  int end = from;
+  while (end < (int)s.length() && s.charAt(end) != ' ') end++;
+  String out = s.substring(from, end);
+  from = end;
+  return out;
+}
+
+// Serial provisioning (secrets never in source):
+//   PROVISION <secret> [version]
+//   WIFI "ssid with spaces" password
+//   WIFI ssid password
+//   SYNC | STATUS | MODEM_CHECK
+void handleSerialCmd() {
+  static String buf;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      buf.trim();
+      if (buf.startsWith("PROVISION ")) {
+        String rest = buf.substring(10);
+        rest.trim();
+        int sp = rest.indexOf(' ');
+        String sec = sp > 0 ? rest.substring(0, sp) : rest;
+        uint32_t ver = 1;
+        if (sp > 0) ver = (uint32_t)rest.substring(sp + 1).toInt();
+        if (ver < 1) ver = 1;
+        sec.trim();
+        // Hash algorithm for backend must be: SHA256(secret + ":" + DEVICE_ID)
+        if (saveSecretToNvs(sec, ver)) {
+          Serial.println("OK secret stored in NVS");
+          Serial.printf("secretVersion=%lu deviceId=%s\n", (unsigned long)ver, DEVICE_ID);
+          Serial.println("Backend secretHash = SHA256(secret + \":\" + deviceId)");
+        } else {
+          Serial.println("ERR secret too short (min 16 chars)");
+        }
+      } else if (buf.startsWith("WIFI ")) {
+        // WIFI "Jarrods wifi" password   or   WIFI ssid password
+        String rest = buf.substring(5);
+        rest.trim();
+        int pos = 0;
+        String ssid = nextToken(rest, pos);
+        while (pos < (int)rest.length() && rest.charAt(pos) == ' ') pos++;
+        String pass = rest.substring(pos);
+        pass.trim();
+        // Allow quoted password too
+        if (pass.startsWith("\"") && pass.endsWith("\"") && pass.length() >= 2) {
+          pass = pass.substring(1, pass.length() - 1);
+        }
+        if (ssid.length() < 1 || pass.length() < 1) {
+          Serial.println("ERR usage: WIFI \"ssid\" password   (quotes required if SSID has spaces)");
+        } else if (saveWifiToNvs(ssid, pass)) {
+          Serial.printf("OK Wi-Fi stored SSID=\"%s\" (password not printed)\n", ssid.c_str());
+          forceWifiReconnect();
+        } else {
+          Serial.println("ERR Wi-Fi SSID empty");
+        }
+      } else if (buf == "RECONNECT") {
+        Serial.println("WiFi: forced reconnect...");
+        forceWifiReconnect();
+      } else if (buf == "MODEM_CHECK") {
+        Serial.println("--- MODEM_CHECK start (ESP32 GPIO17=TXâ†’modem RX, GPIO18=RXâ†modem TX, common GND) ---");
+        sendATWait("AT");
+        sendATWait("AT+CPIN?");
+        sendATWait("AT+CSQ");
+        sendATWait("AT+CREG?");
+        sendATWait("AT+CEREG?");
+        sendATWait("AT+COPS?");
+        sendATWait("AT+CPSI?", 2500);
+        Serial.println("--- MODEM_CHECK done ---");
+      } else if (buf == "SYNC") {
+        pullWhitelist();
+      } else if (buf == "STATUS") {
+        Serial.printf(
+            "secret=%s secretVer=%lu wifi=%s wl_v=%lld n=%u wifi_up=%d relay=%d\n",
+            deviceSecret.length() ? "yes" : "NO",
+            (unsigned long)secretVersion,
+            wifiSsid.length() ? "yes" : "NO",
+            (long long)localWhitelistVersion,
+            (unsigned)callerCount,
+            WiFi.status() == WL_CONNECTED,
+            relayActive);
+      } else if (buf.length()) {
+        modem.print(buf);
+        modem.print("\r\n");
+      }
+      buf = "";
+    } else buf += c;
+  }
+}
+
+void setup() {
+  pinMode(RELAY_PIN, OUTPUT);
+  setRelay(false);
+  Serial.begin(USB_BAUD);
+  delay(1200);
+  modemLine.reserve(1024);
+  modem.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+
+  // Relay must stay OFF through boot / reset
+  setRelay(false);
+
+  Serial.println();
+  Serial.println("RJL SG-PRO production Â· LKG whitelist Â· SMS job queue");
+  loadCredentialsFromNvs();
+  loadWhitelistFromNvs(); // last-known-good survives power loss
+
+  delay(2000);
+  if (waitForModem()) {
+    configureModem();
+    Serial.println("Run MODEM_CHECK for CPIN/CSQ/CREG/CEREG/COPS/CPSI");
+  } else {
+    Serial.println("WARN: modem not ready");
+  }
+
+  ensureWifi();
+  if (deviceSecret.length() >= 16 && wifiSsid.length() > 0) {
+    pullWhitelist();
+  } else {
+    if (deviceSecret.length() < 16) {
+      Serial.println("WARN: Serial: PROVISION <long-random-device-secret> [version]");
+    }
+    if (wifiSsid.length() < 1) {
+      Serial.println("WARN: Serial: WIFI <ssid> <password>");
+    }
+  }
+  lastWhitelistPull = millis();
+  lastHeartbeat = millis();
+  Serial.println("READY â€” calls use local LKG cache only (no cloud wait)");
+}
+
+void loop() {
+  readModem();
+  updateRelay();
+  processPendingCallEvent();
+  rejectHiddenAfterTimeout();
+  handleSerialCmd();
+
+  if (millis() - lastWhitelistPull >= WHITELIST_POLL_MS) {
+    lastWhitelistPull = millis();
+    if (deviceSecret.length() >= 16) pullWhitelist();
+  }
+  if (millis() - lastHeartbeat >= HEARTBEAT_MS) {
+    lastHeartbeat = millis();
+    if (deviceSecret.length() >= 16) sendHeartbeat();
+  }
+  delay(2);
+}
+

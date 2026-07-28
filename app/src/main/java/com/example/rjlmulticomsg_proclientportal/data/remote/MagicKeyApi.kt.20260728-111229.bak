@@ -1,0 +1,46 @@
+package com.example.rjlmulticomsg_proclientportal.data.remote
+
+import com.example.rjlmulticomsg_proclientportal.BuildConfig
+import com.squareup.moshi.JsonClass
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.moshi.MoshiConverterFactory
+import retrofit2.http.Body
+import retrofit2.http.POST
+
+@JsonClass(generateAdapter = true)
+data class UnlockRequest(
+    val secret: String,
+    val requiredScope: String = "open_gate"
+)
+
+@JsonClass(generateAdapter = true)
+data class UnlockResponse(
+    val success: Boolean = false,
+    val message: String? = null,
+    val tenantId: String? = null,
+    val label: String? = null,
+    val scopes: List<String> = emptyList(),
+    val error: String? = null
+)
+
+interface MagicKeyApi {
+    @POST("api/access-keys/unlock")
+    suspend fun unlock(@Body request: UnlockRequest): Response<UnlockResponse>
+}
+
+object MagicKeyNetwork {
+    val moshi: Moshi = Moshi.Builder()
+        .add(KotlinJsonAdapterFactory())
+        .build()
+
+    val api: MagicKeyApi by lazy {
+        Retrofit.Builder()
+            .baseUrl(BuildConfig.MAGIC_KEY_BASE_URL)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+            .create(MagicKeyApi::class.java)
+    }
+}
