@@ -89,15 +89,15 @@
 
     window.setTimeout(() => {
       playVaultOpening({ authorised: false }).catch(resetVault);
-    }, 220);
+    }, 1200);
   }
 
   window.playVaultOpening = playVaultOpening;
   window.resetVaultOpening = resetVault;
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startInitialSequence, { once: true });
-  } else {
+  if (document.readyState === 'complete') {
     startInitialSequence();
+  } else {
+    window.addEventListener('load', startInitialSequence, { once: true });
   }
 })();
