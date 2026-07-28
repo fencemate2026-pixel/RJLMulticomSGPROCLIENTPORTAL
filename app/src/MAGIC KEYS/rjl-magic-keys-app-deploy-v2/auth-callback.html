@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#050506" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Verifying access | Magic Keys</title>
+  <link rel="icon" href="/rjl-commercial-logo-transparent.png" />
+  <style>
+    *{box-sizing:border-box}html,body{min-height:100%}body{margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 50% 20%,rgba(231,31,46,.18),transparent 34%),#050506;color:#f5f7f9;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.callback-card{width:min(560px,100%);padding:44px;border:1px solid rgba(255,255,255,.12);border-radius:28px;background:linear-gradient(180deg,rgba(20,20,22,.94),rgba(8,8,10,.98));box-shadow:0 35px 100px rgba(0,0,0,.55),0 0 55px rgba(229,31,45,.12);text-align:center}.callback-card img{width:min(330px,85%);height:84px;object-fit:contain}.callback-kicker{margin:28px 0 8px;font-size:11px;letter-spacing:.22em;font-weight:800;color:#ef3141}.callback-card h1{margin:0;font-size:clamp(30px,6vw,48px)}.callback-card p{margin:16px auto 0;max-width:420px;color:#aeb4bf;line-height:1.6}.spinner{width:54px;height:54px;margin:30px auto 0;border-radius:50%;border:3px solid rgba(255,255,255,.12);border-top-color:#ef3141;animation:spin .85s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}#callbackStatus.failed{color:#ff6d79}.return-link{display:inline-flex;margin-top:24px;min-height:46px;padding:0 20px;align-items:center;justify-content:center;border-radius:11px;color:#fff;text-decoration:none;background:linear-gradient(135deg,#b81523,#ef2635)}.hidden{display:none!important}
+  </style>
+</head>
+<body>
+  <main class="callback-card">
+    <img src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" />
+    <p class="callback-kicker">SECURE GOOGLE AUTHENTICATION</p>
+    <h1>Verifying your identity</h1>
+    <div class="spinner" aria-hidden="true"></div>
+    <p id="callbackStatus" aria-live="polite">Completing the secure OAuth connection…</p>
+    <a id="returnLink" class="return-link hidden" href="/">Return to secure login</a>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+  <script src="/auth-callback.js?v=20260728-google-oauth-1"></script>
+</body>
+</html>
