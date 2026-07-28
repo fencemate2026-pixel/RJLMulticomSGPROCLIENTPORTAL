@@ -6,10 +6,12 @@ import com.example.rjlmulticomsg_proclientportal.data.remote.MagicKeyApi
 import com.example.rjlmulticomsg_proclientportal.data.remote.MagicKeyNetwork
 import com.example.rjlmulticomsg_proclientportal.data.remote.VerifyMagicKeyRequest
 import com.example.rjlmulticomsg_proclientportal.data.remote.VerifyMagicKeyResponse
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 sealed interface MagicKeyUiState {
     data object Idle : MagicKeyUiState
@@ -36,28 +38,40 @@ class MagicKeyViewModel(
         _state.value = MagicKeyUiState.Loading
         viewModelScope.launch {
             _state.value = try {
-                val response = api.verify(VerifyMagicKeyRequest(key))
-                val body = if (response.isSuccessful) {
-                    response.body()
-                } else {
-                    response.errorBody()?.use {
-                        MagicKeyNetwork.moshi.adapter(VerifyMagicKeyResponse::class.java)
-                            .fromJson(it.string())
+                withTimeout(15_000L) {
+                    val response = api.verify(VerifyMagicKeyRequest(key))
+                    val body = if (response.isSuccessful) {
+                        response.body()
+                    } else {
+                        response.errorBody()?.use {
+                            MagicKeyNetwork.moshi.adapter(VerifyMagicKeyResponse::class.java)
+                                .fromJson(it.string())
+                        }
+                    }
+
+                    if (response.isSuccessful && body?.authorized == true) {
+                        MagicKeyUiState.Granted(body)
+                    } else {
+                        MagicKeyUiState.Error(
+                            magicKeyErrorMessage(body?.error, response.code())
+                        )
                     }
                 }
-
-                if (response.isSuccessful && body?.authorized == true) {
-                    MagicKeyUiState.Granted(body)
-                } else {
-                    MagicKeyUiState.Error(
-                        magicKeyErrorMessage(body?.error, response.code())
-                    )
-                }
+            } catch (_: TimeoutCancellationException) {
+                MagicKeyUiState.Error(
+                    "Verification timed out. Check your connection and try again."
+                )
             } catch (_: Exception) {
                 MagicKeyUiState.Error(
                     "Network error. Check your internet connection and try again."
                 )
             }
+        }
+    }
+
+    fun reset() {
+        if (_state.value != MagicKeyUiState.Loading) {
+            _state.value = MagicKeyUiState.Idle
         }
     }
 }
