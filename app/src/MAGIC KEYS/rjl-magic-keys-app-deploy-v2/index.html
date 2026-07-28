@@ -3,21 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0a1421" />
+  <meta name="theme-color" content="#06090e" />
   <meta name="description" content="Secure RJL Commercial Magic Keys client access portal." />
   <title>Magic Keys | RJL Commercial</title>
   <link rel="icon" href="/rjl-commercial-logo-transparent.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <style>html,body{background:#0a1421!important;color:#f6f9ff!important}</style>
-  <link rel="stylesheet" href="/styles.css?v=20260728-core-2" />
-  <link rel="stylesheet" href="/tough-tech.css?v=20260728-graphite-red-2" />
-  <link rel="stylesheet" href="/vault-sequence.css?v=20260728-vault-open-1" />
-  <link rel="stylesheet" href="/approved-vault-theme.css?v=20260728-approved-1" />
+  <style>html,body{background:#06090e!important;color:#f7fbff!important}</style>
+  <link rel="stylesheet" href="/styles.css?v=20260728-core-3" />
+  <link rel="stylesheet" href="/vault-sequence.css?v=20260728-vault-open-2" />
+  <link rel="stylesheet" href="/final-vault-ui.css?v=20260728-final-control-room-1" />
 </head>
 <body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
-
   <div id="vaultSequence" class="vault-sequence" aria-hidden="true">
     <div class="vault-sequence__hud">
       <span>RJL SECURE ACCESS // VAULT NODE 01</span>
@@ -34,10 +30,7 @@
           <span class="vault-bolt vault-bolt--right"></span>
           <span class="vault-bolt vault-bolt--bottom"></span>
           <span class="vault-bolt vault-bolt--left"></span>
-          <div class="vault-wheel">
-            <span class="vault-wheel-spoke"></span>
-            <span class="vault-wheel-spoke"></span>
-          </div>
+          <div class="vault-wheel"><span class="vault-wheel-spoke"></span><span class="vault-wheel-spoke"></span></div>
           <span class="vault-hub"></span>
         </div>
       </div>
@@ -50,131 +43,161 @@
 
   <main class="shell">
     <section id="authView" class="auth-layout">
-      <aside class="brand-panel glass">
-        <img class="hero-logo" src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" />
-        <div class="magic-label">Magic Keys secure access portal</div>
-        <div class="brand-copy">
-          <span class="pill">Secure client portal</span>
-          <h1>Advanced access control. Built for authorised operators.</h1>
-          <p>Private, encrypted access for nominated representatives of 337 Settlement Road, Thomastown.</p>
-        </div>
-        <div class="vault-visual" aria-hidden="true">
-          <div class="vault-frame">
-            <div class="vault-ring ring-a"></div>
-            <div class="vault-ring ring-b"></div>
-            <div class="vault-ring ring-c"></div>
-            <div class="vault-core"></div>
-            <div class="vault-lock">🔒</div>
-          </div>
-        </div>
-        <div class="security-note">
-          <span class="shield">✓</span>
-          <div><strong>Protected by secure authentication</strong><p>Your key is only shown after your identity is verified.</p></div>
-        </div>
-      </aside>
+      <header class="mk-topbar">
+        <div class="mk-logo-plate"><img src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></div>
+        <div class="mk-title-block"><span>Secure access platform</span><strong>Magic Keys</strong></div>
+        <div class="mk-live-state"><i class="mk-live-dot"></i><div><small>System status</small><strong>Secure terminal online</strong></div></div>
+      </header>
 
-      <section class="login-card glass">
-        <div id="loginPanel">
-          <p class="section-kicker">SECURE OPERATOR LOGIN</p>
-          <h2>Access terminal</h2>
-          <p class="muted">Authenticate to enter the live Magic Keys control portal.</p>
-          <form id="loginForm" class="form-stack">
-            <label>Email address<input id="email" type="email" autocomplete="email" required placeholder="name@company.com" /></label>
-            <label>Password<div class="password-wrap"><input id="password" type="password" autocomplete="current-password" required placeholder="Your password" /><button type="button" class="text-button" id="togglePassword">Show</button></div></label>
-            <button class="primary-button" type="submit">Authenticate securely</button>
-          </form>
-          <button id="forgotButton" class="link-button" type="button">Forgot your password?</button>
-          <div id="authMessage" class="message" aria-live="polite"></div>
-        </div>
-        <div id="setPasswordPanel" class="hidden">
-          <p class="section-kicker">ACCOUNT SETUP</p><h2>Create your password</h2><p class="muted">Choose a strong password to finish activating your account.</p>
-          <form id="setPasswordForm" class="form-stack">
-            <label>New password<input id="newPassword" type="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters" /></label>
-            <label>Confirm password<input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" required placeholder="Repeat your password" /></label>
-            <button class="primary-button" type="submit">Activate my account</button>
-          </form>
-          <div id="setupMessage" class="message" aria-live="polite"></div>
-        </div>
-      </section>
-    </section>
-
-    <section id="dashboardView" class="dashboard hidden">
-      <aside class="sidebar glass">
-        <img class="sidebar-logo" src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" />
-        <div class="sidebar-title">Magic Keys</div><div class="sidebar-subtitle">Secure access command centre</div>
-        <nav class="sidebar-nav">
-          <button class="nav-item active" type="button" data-target="dashboardSection"><span>⌂</span> Dashboard</button>
-          <button class="nav-item" type="button" data-target="keySection"><span>⌘</span> Authorisation Key</button>
-          <button class="nav-item" type="button" data-target="activitySection"><span>≣</span> Activity Log</button>
-          <button class="nav-item" type="button" data-target="supportSection"><span>?</span> Support</button>
-        </nav>
-        <div class="sidebar-bottom">
-          <div class="user-chip"><div id="initials" class="avatar">--</div><div><strong id="sidebarName">Authorised User</strong><span id="sidebarRole">Representative</span></div></div>
-          <button id="signOutButton" class="secondary-button" type="button">Sign out</button>
-        </div>
-      </aside>
-
-      <section class="content">
-        <header class="topbar"><div><p class="section-kicker">SECURE CLIENT DASHBOARD</p><h1 id="welcomeTitle">Welcome</h1><p class="muted">Your live access information is shown below.</p></div><img class="header-logo" src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></header>
-
-        <section class="command-hero" aria-label="Secure vault system status">
-          <div class="command-hero__copy">
-            <p class="section-kicker">RJL SECURE ACCESS PORTAL</p>
-            <h2>Secure vault online</h2>
-            <p>Advanced security, trusted access and real-time protection for authorised representatives.</p>
-          </div>
-          <div class="command-hero__vault" aria-hidden="true">
-            <div class="vault-frame">
-              <div class="vault-ring ring-a"></div>
-              <div class="vault-ring ring-b"></div>
-              <div class="vault-ring ring-c"></div>
-              <div class="vault-core"></div>
-              <div class="vault-lock">RJL</div>
+      <div class="auth-main">
+        <section class="auth-vault-stage">
+          <div class="auth-copy">
+            <p class="eyebrow">Advanced security control</p>
+            <h1>Secure access. Authorised operators only.</h1>
+            <div class="auth-line"></div>
+            <p>Private encrypted access for nominated representatives of 337 Settlement Road, Thomastown.</p>
+            <div class="auth-feature-grid">
+              <div class="auth-feature"><i>01</i><div><strong>Identity verification</strong><span>Secure Supabase authentication</span></div></div>
+              <div class="auth-feature"><i>02</i><div><strong>Live authorisation key</strong><span>Protected six-digit credential</span></div></div>
+              <div class="auth-feature"><i>03</i><div><strong>RJL managed access</strong><span>Authorised representatives only</span></div></div>
             </div>
           </div>
-          <div class="command-hero__status">
-            <div class="status-module"><span>System status</span><strong class="secure">Secure</strong><div class="status-lights"><i></i><i></i><i></i></div></div>
-            <div class="status-module"><span>Encrypted connection</span><strong>Established</strong><div class="status-lights"><i></i><i></i><i></i></div></div>
+
+          <div class="mk-vault-wrap" aria-hidden="true">
+            <div class="mk-vault">
+              <div class="mk-vault-ring r1"></div><div class="mk-vault-ring r2"></div><div class="mk-vault-ring r3"></div>
+              <div class="mk-wheel"><span></span><span></span></div>
+              <div class="mk-vault-badge"><img src="/rjl-commercial-logo-transparent.png" alt="" /></div>
+            </div>
+            <div class="mk-vault-caption">RJL encrypted vault // authentication required</div>
           </div>
         </section>
 
-        <div id="loadingState" class="loading-card glass"><div class="spinner"></div><p>Loading your secure authorisation key…</p></div>
-        <div id="errorState" class="loading-card glass hidden"><div><h2>We could not load your key</h2><p id="errorText">Please try again.</p><div class="key-actions centred"><button id="retryButton" class="primary-button small" type="button">Retry</button><button id="goSupportButton" class="secondary-button small" type="button">Open support</button></div></div></div>
+        <section class="login-console">
+          <div id="loginPanel">
+            <p class="section-kicker">Secure operator login</p>
+            <h2>Access terminal</h2>
+            <p class="muted">Authenticate to enter the live Magic Keys command centre.</p>
+            <form id="loginForm" class="form-stack">
+              <label>Email address<input id="email" type="email" autocomplete="email" required placeholder="name@company.com" /></label>
+              <label>Password<div class="password-wrap"><input id="password" type="password" autocomplete="current-password" required placeholder="Your password" /><button type="button" class="text-button" id="togglePassword">Show</button></div></label>
+              <button class="primary-button" type="submit">Authenticate securely</button>
+            </form>
+            <button id="forgotButton" class="link-button" type="button">Forgot your password?</button>
+            <div id="authMessage" class="message" aria-live="polite"></div>
+          </div>
 
-        <div id="dashboardContent" class="hidden">
-          <section id="dashboardSection" class="view-section active-section">
-            <article class="key-card glass">
-              <div class="key-copy"><p class="section-kicker">LIVE AUTHORISATION CREDENTIAL</p><h2 id="keyDisplay" class="key-number">••• •••</h2><p>This key is shared only by authorised representatives for this property.</p><div class="key-actions"><button id="revealButton" class="primary-button small" type="button">Reveal key</button><button id="copyButton" class="secondary-button small" type="button">Copy key</button></div></div>
-              <div class="key-orbit" aria-hidden="true"><div class="ring ring-one"></div><div class="ring ring-two"></div><div class="ring ring-three"></div><div class="key-icon">🔐</div></div>
-            </article>
-            <div class="info-grid">
-              <article class="info-card glass"><span class="info-icon">▦</span><div><p>Property</p><h3 id="siteName">337 Settlement Road</h3><span>Thomastown, VIC 3074</span></div></article>
-              <article class="info-card glass"><span class="info-icon">✓</span><div><p>Access level</p><h3 id="accessLevel">Authorised Representative</h3><span>Secure key access</span></div></article>
-              <article class="info-card glass"><span class="info-icon">◉</span><div><p>Status</p><h3 class="status-live">Active</h3><span id="updatedAt">Current secure record</span></div></article>
+          <div id="setPasswordPanel" class="hidden">
+            <p class="section-kicker">Account setup</p>
+            <h2>Create your password</h2>
+            <p class="muted">Choose a strong password to activate secure access.</p>
+            <form id="setPasswordForm" class="form-stack">
+              <label>New password<input id="newPassword" type="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters" /></label>
+              <label>Confirm password<input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" required placeholder="Repeat your password" /></label>
+              <button class="primary-button" type="submit">Activate my account</button>
+            </form>
+            <div id="setupMessage" class="message" aria-live="polite"></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="auth-status-strip">
+        <div class="mk-status-card"><span>Encryption</span><strong class="online">Established</strong></div>
+        <div class="mk-status-card"><span>Vault node</span><strong>RJL-MK-01</strong></div>
+        <div class="mk-status-card"><span>Property</span><strong>337 Settlement Road</strong></div>
+      </div>
+    </section>
+
+    <section id="dashboardView" class="dashboard hidden">
+      <header class="mk-topbar">
+        <div class="mk-logo-plate"><img src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></div>
+        <div class="mk-title-block"><span>Secure access control room</span><strong>Magic Keys</strong></div>
+        <div class="mk-live-state"><i class="mk-live-dot"></i><div><small>Encrypted connection</small><strong>Active and secure</strong></div></div>
+      </header>
+
+      <div class="dashboard-shell">
+        <aside class="sidebar">
+          <div class="sidebar-brand"><strong>Control centre</strong><span>RJL secure access</span></div>
+          <nav class="sidebar-nav">
+            <button class="nav-item active" type="button" data-target="dashboardSection"><span>⌂</span> Dashboard</button>
+            <button class="nav-item" type="button" data-target="keySection"><span>⌘</span> Authorisation Key</button>
+            <button class="nav-item" type="button" data-target="activitySection"><span>≣</span> Activity Log</button>
+            <button class="nav-item" type="button" data-target="supportSection"><span>?</span> Support</button>
+          </nav>
+          <div class="sidebar-bottom">
+            <div class="user-chip"><div id="initials" class="avatar">--</div><div><strong id="sidebarName">Authorised User</strong><span id="sidebarRole">Representative</span></div></div>
+            <button id="signOutButton" class="secondary-button" type="button">Sign out</button>
+          </div>
+        </aside>
+
+        <section class="content">
+          <header class="dashboard-topline">
+            <div><p class="section-kicker">Secure client dashboard</p><h1 id="welcomeTitle">Welcome</h1></div>
+            <div class="dashboard-chip">RJL vault node // live</div>
+          </header>
+
+          <section class="command-hero" aria-label="Secure vault system status">
+            <div class="command-copy">
+              <p class="section-kicker">RJL secure access portal</p>
+              <h2>Secure vault online</h2>
+              <p>Advanced security, trusted access and real-time protection for authorised representatives.</p>
+            </div>
+
+            <div class="mk-vault-wrap" aria-hidden="true">
+              <div class="mk-vault">
+                <div class="mk-vault-ring r1"></div><div class="mk-vault-ring r2"></div><div class="mk-vault-ring r3"></div>
+                <div class="mk-wheel"><span></span><span></span></div>
+                <div class="mk-vault-badge"><img src="/rjl-commercial-logo-transparent.png" alt="" /></div>
+              </div>
+              <div class="mk-vault-caption">Secure vault online // access node active</div>
+            </div>
+
+            <div class="command-status">
+              <div class="mk-status-card"><span>System status</span><strong class="secure">Secure</strong><div class="mk-leds"><i></i><i></i><i></i></div></div>
+              <div class="mk-status-card"><span>Encrypted connection</span><strong>Established</strong><div class="mk-leds"><i></i><i></i><i></i></div></div>
+              <div class="mk-status-card"><span>Access node</span><strong>RJL-MK-01</strong><div class="mk-leds"><i></i><i></i><i></i></div></div>
             </div>
           </section>
 
-          <section id="keySection" class="view-section hidden">
-            <div class="two-col-grid">
-              <article class="panel-card glass"><p class="section-kicker">CURRENT KEY</p><h2 id="keyDisplayLarge" class="key-number small-key">••• •••</h2><p>This is the live shared authorisation key for the connected property.</p><div class="key-actions"><button id="revealButtonAlt" class="primary-button small" type="button">Reveal key</button><button id="copyButtonAlt" class="secondary-button small" type="button">Copy key</button></div></article>
-              <article class="panel-card glass"><p class="section-kicker">KEY DETAILS</p><div class="details-list"><div><span>Representatives</span><strong>Shared authorised access</strong></div><div><span>Property</span><strong id="siteNameAlt">337 Settlement Road, Thomastown</strong></div><div><span>Last updated</span><strong id="updatedAtAlt">Current secure record</strong></div><div><span>Access role</span><strong id="accessLevelAlt">Authorised Representative</strong></div></div></article>
-            </div>
-          </section>
+          <div id="loadingState" class="loading-card"><div><div class="spinner"></div><p>Loading your secure authorisation key…</p></div></div>
+          <div id="errorState" class="loading-card hidden"><div><h2>We could not load your key</h2><p id="errorText">Please try again.</p><div class="key-actions"><button id="retryButton" class="primary-button small" type="button">Retry</button><button id="goSupportButton" class="secondary-button small" type="button">Open support</button></div></div></div>
 
-          <section id="activitySection" class="view-section hidden"><article class="panel-card glass"><div class="panel-head"><div><p class="section-kicker">ACTIVITY LOG</p><h2>Recent secure activity</h2></div></div><div id="activityList" class="activity-list"></div></article></section>
+          <div id="dashboardContent" class="hidden">
+            <section id="dashboardSection" class="view-section active-section">
+              <article class="key-card">
+                <div class="key-copy"><p class="section-kicker">Live authorisation credential</p><h2 id="keyDisplay" class="key-number">••• •••</h2><p>This key is shared only by authorised representatives for this property.</p><div class="key-actions"><button id="revealButton" class="primary-button small" type="button">Reveal key</button><button id="copyButton" class="secondary-button small" type="button">Copy key</button></div></div>
+                <div class="key-orbit" aria-hidden="true"><div class="ring ring-one"></div><div class="ring ring-two"></div><div class="ring ring-three"></div><div class="key-icon">🔐</div></div>
+              </article>
+              <div class="info-grid">
+                <article class="info-card"><span class="info-icon">▦</span><div><p>Property</p><h3 id="siteName">337 Settlement Road</h3><span>Thomastown, VIC 3074</span></div></article>
+                <article class="info-card"><span class="info-icon">✓</span><div><p>Access level</p><h3 id="accessLevel">Authorised Representative</h3><span>Secure key access</span></div></article>
+                <article class="info-card"><span class="info-icon">◉</span><div><p>Status</p><h3 class="status-live">Active</h3><span id="updatedAt">Current secure record</span></div></article>
+              </div>
+            </section>
 
-          <section id="supportSection" class="view-section hidden">
-            <article class="support-card glass"><div><p class="section-kicker">RJL COMMERCIAL SUPPORT</p><h2>Fencing, gates and automation specialists</h2><p>For authorised-user changes or access assistance, contact RJL Commercial.</p></div><div class="support-actions"><a class="secondary-button small" href="tel:+61400101132">Call 0400 101 132</a><a class="primary-button small" href="mailto:info@rjlcommercial.com">Email support</a></div></article>
-            <div class="support-grid"><article class="panel-card glass"><p class="section-kicker">PHONE SUPPORT</p><h3>0400 101 132</h3><p class="muted">Speak with RJL Commercial for urgent assistance.</p></article><article class="panel-card glass"><p class="section-kicker">EMAIL SUPPORT</p><h3>info@rjlcommercial.com</h3><p class="muted">For access changes, site updates and support enquiries.</p></article></div>
-          </section>
-        </div>
-        <footer><span>Secure access system powered by</span><img src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></footer>
-      </section>
+            <section id="keySection" class="view-section hidden">
+              <div class="two-col-grid">
+                <article class="panel-card"><p class="section-kicker">Current key</p><h2 id="keyDisplayLarge" class="key-number small-key">••• •••</h2><p>This is the live shared authorisation key for the connected property.</p><div class="key-actions"><button id="revealButtonAlt" class="primary-button small" type="button">Reveal key</button><button id="copyButtonAlt" class="secondary-button small" type="button">Copy key</button></div></article>
+                <article class="panel-card"><p class="section-kicker">Key details</p><div class="details-list"><div><span>Representatives</span><strong>Shared authorised access</strong></div><div><span>Property</span><strong id="siteNameAlt">337 Settlement Road, Thomastown</strong></div><div><span>Last updated</span><strong id="updatedAtAlt">Current secure record</strong></div><div><span>Access role</span><strong id="accessLevelAlt">Authorised Representative</strong></div></div></article>
+              </div>
+            </section>
+
+            <section id="activitySection" class="view-section hidden"><article class="panel-card"><div><p class="section-kicker">Activity log</p><h2>Recent secure activity</h2></div><div id="activityList" class="activity-list"></div></article></section>
+
+            <section id="supportSection" class="view-section hidden">
+              <article class="support-card"><div><p class="section-kicker">RJL Commercial support</p><h2>Fencing, gates and automation specialists</h2><p>For authorised-user changes or access assistance, contact RJL Commercial.</p></div><div class="support-actions"><a class="secondary-button small" href="tel:+61400101132">Call 0400 101 132</a><a class="primary-button small" href="mailto:info@rjlcommercial.com">Email support</a></div></article>
+              <div class="support-grid"><article class="panel-card"><p class="section-kicker">Phone support</p><h3>0400 101 132</h3><p>Speak with RJL Commercial for urgent assistance.</p></article><article class="panel-card"><p class="section-kicker">Email support</p><h3>info@rjlcommercial.com</h3><p>For access changes, site updates and support enquiries.</p></article></div>
+            </section>
+          </div>
+
+          <footer><span>Secure access system powered by</span><img src="/rjl-commercial-logo-transparent.png" alt="RJL Commercial" /></footer>
+        </section>
+      </div>
     </section>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
   <script src="/vault-sequence.js?v=20260728-vault-open-2"></script>
-  <script src="/bootstrap.js?v=20260728-reliability-3"></script>
+  <script src="/bootstrap.js?v=20260728-final-control-room-1"></script>
 </body>
 </html>
