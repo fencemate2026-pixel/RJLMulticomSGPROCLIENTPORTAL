@@ -3,7 +3,7 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_2AetVTjWpPNPFkSAIYltWg_slgY9b1R
 
 const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
-    persistSession: true,
+    persistSession: false,
     autoRefreshToken: true,
     detectSessionInUrl: true
   }
@@ -16,8 +16,10 @@ let currentKey = "";
 let keyVisible = false;
 let currentProfile = null;
 let activityEntries = [];
+let loadPromise = null;
 
 function setMessage(target, text, success = false) {
+  if (!target) return;
   target.textContent = text || "";
   target.classList.toggle("success", success);
 }
@@ -29,10 +31,7 @@ function initials(name = "") {
 function formatDate(value) {
   if (!value) return "Current secure record";
   try {
-    return `Updated ${new Intl.DateTimeFormat("en-AU", {
-      dateStyle: "medium",
-      timeStyle: "short"
-    }).format(new Date(value))}`;
+    return `Updated ${new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))}`;
   } catch {
     return "Current secure record";
   }
@@ -40,10 +39,7 @@ function formatDate(value) {
 
 function formatTime(value = new Date()) {
   try {
-    return new Intl.DateTimeFormat("en-AU", {
-      dateStyle: "medium",
-      timeStyle: "short"
-    }).format(value instanceof Date ? value : new Date(value));
+    return new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(value instanceof Date ? value : new Date(value));
   } catch {
     return "Just now";
   }
@@ -69,13 +65,7 @@ function renderActivity() {
     return;
   }
   wrap.innerHTML = activityEntries.map((item) => `
-    <div class="activity-item">
-      <div>
-        <strong>${escapeHtml(item.title)}</strong>
-        <span>${escapeHtml(item.detail)}</span>
-      </div>
-      <span>${escapeHtml(formatTime(item.time))}</span>
-    </div>
+    <div class="activity-item"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></div><span>${escapeHtml(formatTime(item.time))}</span></div>
   `).join('');
 }
 
@@ -94,8 +84,12 @@ function setLoading() {
   el("dashboardContent").classList.add("hidden");
 }
 
-function setError(message) {
+function stopLoading() {
   el("loadingState").classList.add("hidden");
+}
+
+function setError(message) {
+  stopLoading();
   el("dashboardContent").classList.add("hidden");
   el("errorText").textContent = message || "Please sign out and try again.";
   el("errorState").classList.remove("hidden");
@@ -103,12 +97,13 @@ function setError(message) {
 }
 
 function setContentReady() {
-  el("loadingState").classList.add("hidden");
+  stopLoading();
   el("errorState").classList.add("hidden");
   el("dashboardContent").classList.remove("hidden");
 }
 
 function showAuth() {
+  stopLoading();
   el("dashboardView").classList.add("hidden");
   el("authView").classList.remove("hidden");
 }
@@ -133,46 +128,29 @@ function activateSection(targetId) {
   viewSections().forEach((section) => section.classList.toggle('hidden', section.id !== targetId));
 }
 
-async function fetchMagicKeyViaFunction(session) {
-  const { data, error } = await client.functions.invoke("get-magic-key", {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${session.access_token}`
-    }
-  });
-
-  if (error) throw error;
-  return data;
-}
-
-async function fetchMagicKeyDirect(session) {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/get-magic-key`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      apikey: SUPABASE_PUBLISHABLE_KEY,
-      'Content-Type': 'application/json'
-    }
-  });
-
-  let data = null;
-  try { data = await response.json(); } catch { /* ignore */ }
-  if (!response.ok) {
-    const message = data?.error || `Edge Function returned ${response.status}`;
-    throw new Error(message);
-  }
-  return data;
-}
-
-async function getMagicKey(session) {
+async function fetchMagicKey(session) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
   try {
-    return await fetchMagicKeyViaFunction(session);
-  } catch (firstError) {
-    try {
-      return await fetchMagicKeyDirect(session);
-    } catch (secondError) {
-      throw new Error(secondError.message || firstError.message || "Unable to load the authorisation key.");
-    }
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/get-magic-key`, {
+      method: 'GET',
+      signal: controller.signal,
+      cache: 'no-store',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: SUPABASE_PUBLISHABLE_KEY,
+        'Content-Type': 'application/json'
+      }
+    });
+    let data = null;
+    try { data = await response.json(); } catch { /* response was not JSON */ }
+    if (!response.ok) throw new Error(data?.error || `Secure service returned ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('The secure service took too long to respond. Press Retry.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -181,12 +159,13 @@ function applyProfile(data) {
   currentKey = String(data.authorisation_key || "");
   keyVisible = false;
   setKeyDisplays(currentKey);
+  const fullName = String(data.representative || "Authorised User").trim();
   el("siteName").textContent = data.site || "337 Settlement Road";
   el("siteNameAlt").textContent = data.site || "337 Settlement Road, Thomastown";
-  el("sidebarName").textContent = data.representative || "Authorised User";
+  el("sidebarName").textContent = fullName;
   el("sidebarRole").textContent = data.position || "Representative";
-  el("welcomeTitle").textContent = `Welcome, ${(data.representative || "Authorised User").split(" ")[0]}`;
-  el("initials").textContent = initials(data.representative);
+  el("welcomeTitle").textContent = `Welcome, ${fullName}`;
+  el("initials").textContent = initials(fullName);
   el("updatedAt").textContent = formatDate(data.updated_at);
   el("updatedAtAlt").textContent = formatDate(data.updated_at);
   el("accessLevel").textContent = data.position || "Authorised Representative";
@@ -194,71 +173,68 @@ function applyProfile(data) {
 }
 
 async function loadMagicKey() {
-  setLoading();
-
-  const { data: sessionData } = await client.auth.getSession();
-  const session = sessionData.session;
-  if (!session) {
-    showAuth();
-    return;
-  }
-
-  try {
-    const data = await getMagicKey(session);
-    if (!data || !data.authorisation_key) {
-      throw new Error("No authorisation key was returned for this account.");
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    setLoading();
+    try {
+      const { data: sessionData, error: sessionError } = await client.auth.getSession();
+      if (sessionError) throw sessionError;
+      const session = sessionData.session;
+      if (!session) {
+        showAuth();
+        showLogin();
+        return;
+      }
+      const data = await fetchMagicKey(session);
+      if (!data || !data.authorisation_key) throw new Error("No authorisation key was returned for this account.");
+      applyProfile(data);
+      setContentReady();
+      pushActivity("Key loaded", `Secure key loaded for ${data.representative || 'authorised user'}.`);
+    } catch (error) {
+      const raw = error?.message || "Please sign out and try again.";
+      const message = raw.includes('not_authorised') ? 'This login is not linked to a Magic Keys property yet.' : raw;
+      setError(message);
+    } finally {
+      loadPromise = null;
     }
-    applyProfile(data);
-    setContentReady();
-    pushActivity("Key loaded", `Secure key loaded for ${data.representative || 'authorised user'}.`);
-  } catch (error) {
-    const message = error?.message || "Please sign out and try again.";
-    setError(message.includes('not_authorised') ? 'This login is not linked to a Magic Keys property yet.' : message);
-  }
+  })();
+  return loadPromise;
 }
 
 el("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  setMessage(el("authMessage"), "Signing you in…");
-
+  setMessage(el("authMessage"), "Authenticating…");
   const email = el("email").value.trim();
   const password = el("password").value;
-
-  const { error } = await client.auth.signInWithPassword({ email, password });
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) {
     setMessage(el("authMessage"), error.message);
     return;
   }
-
+  setMessage(el("authMessage"), "Access granted.", true);
+  showDashboard();
+  activateSection('dashboardSection');
   pushActivity("Signed in", `${email} successfully signed in.`);
-  setMessage(el("authMessage"), "Signed in successfully.", true);
+  await loadMagicKey();
 });
 
 el("setPasswordForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const password = el("newPassword").value;
   const confirmation = el("confirmPassword").value;
-
   if (password !== confirmation) {
     setMessage(el("setupMessage"), "The passwords do not match.");
     return;
   }
-
   setMessage(el("setupMessage"), "Activating your account…");
   const { error } = await client.auth.updateUser({ password });
-
   if (error) {
     setMessage(el("setupMessage"), error.message);
     return;
   }
-
-  pushActivity("Password created", "The invited account finished setup.");
-  setMessage(el("setupMessage"), "Your account is active. Loading your dashboard…", true);
-  setTimeout(() => {
-    showLogin();
-    showDashboard();
-    loadMagicKey();
-  }, 700);
+  setMessage(el("setupMessage"), "Your account is active. Sign in to continue.", true);
+  await client.auth.signOut({ scope: 'local' });
+  showLogin();
 });
 
 el("forgotButton").addEventListener("click", async () => {
@@ -267,17 +243,9 @@ el("forgotButton").addEventListener("click", async () => {
     setMessage(el("authMessage"), "Enter your email address first.");
     return;
   }
-
   setMessage(el("authMessage"), "Sending password reset email…");
-  const { error } = await client.auth.resetPasswordForEmail(email, {
-    redirectTo: `${window.location.origin}/`
-  });
-
-  setMessage(
-    el("authMessage"),
-    error ? error.message : "Check your email for the secure password reset link.",
-    !error
-  );
+  const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/` });
+  setMessage(el("authMessage"), error ? error.message : "Check your email for the secure password reset link.", !error);
 });
 
 el("togglePassword").addEventListener("click", () => {
@@ -314,7 +282,7 @@ el("copyButton").addEventListener("click", copyKey);
 el("copyButtonAlt").addEventListener("click", copyKey);
 
 el("signOutButton").addEventListener("click", async () => {
-  await client.auth.signOut();
+  await client.auth.signOut({ scope: 'local' });
   currentKey = "";
   currentProfile = null;
   activityEntries = [];
@@ -323,50 +291,36 @@ el("signOutButton").addEventListener("click", async () => {
   showLogin();
 });
 
-el("retryButton").addEventListener("click", () => loadMagicKey());
+el("retryButton").addEventListener("click", loadMagicKey);
 el("goSupportButton").addEventListener("click", () => {
   setContentReady();
   activateSection('supportSection');
 });
-
 navItems().forEach((button) => button.addEventListener('click', () => activateSection(button.dataset.target)));
 
-client.auth.onAuthStateChange(async (event, session) => {
-  if (event === "PASSWORD_RECOVERY" || event === "USER_UPDATED") {
+client.auth.onAuthStateChange((event) => {
+  if (event === "PASSWORD_RECOVERY") {
     showAuth();
     showPasswordSetup();
-    return;
   }
-
-  if (event === "SIGNED_IN" && session) {
-    showDashboard();
-    activateSection('dashboardSection');
-    await loadMagicKey();
-    return;
-  }
-
   if (event === "SIGNED_OUT") {
     showAuth();
+    showLogin();
   }
 });
 
 (async function initialise() {
   renderActivity();
+  showAuth();
+  showLogin();
   const params = new URLSearchParams(window.location.search);
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const type = params.get("type") || hashParams.get("type");
-
-  const { data } = await client.auth.getSession();
   if (type === "invite" || type === "recovery") {
-    showAuth();
     showPasswordSetup();
-  } else if (data.session) {
-    showDashboard();
-    activateSection('dashboardSection');
-    pushActivity("Session restored", "A saved secure session was restored.");
-    await loadMagicKey();
-  } else {
-    showAuth();
-    showLogin();
+    return;
   }
+  await client.auth.signOut({ scope: 'local' });
+  showAuth();
+  showLogin();
 })();
