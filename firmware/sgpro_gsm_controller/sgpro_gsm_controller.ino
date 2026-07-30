@@ -374,6 +374,15 @@ void loadCredentialsFromNvs() {
   cellularUser = prefs.getString("apnUser", "");
   cellularPass = prefs.getString("apnPass", "");
   localWhitelistVersion = prefs.getLong64("wl_ver", -1);
+  localWhitelistChecksum = prefs.getString("wl_cksum", "");
+  prefs.end();
+}
+
+// Small NVS update only (not the dual-slot caller payload).
+void persistWhitelistMeta(int64_t version, const String &checksum) {
+  prefs.begin("sgpro", false);
+  prefs.putLong64("wl_ver", version);
+  if (checksum.length() == 64) prefs.putString("wl_cksum", checksum);
   prefs.end();
 }
 
@@ -1369,33 +1378,43 @@ bool pullWhitelist() {
 
   // Persist and verify the inactive NVS slot before changing the active list.
   int64_t newVer = doc["version"] | 0;
-  // Skip NVS writes when whitelist payload is unchanged (reduces flash wear).
-  if (newVer == localWhitelistVersion &&
-      localWhitelistChecksum.length() == 64 &&
-      localWhitelistChecksum.equalsIgnoreCase(actualChecksum)) {
-    Serial.printf("Whitelist unchanged v%lld; skip NVS write\n", (long long)newVer);
-    return true;
-  }
-  if (!persistWhitelistAtomic(temp, n, newVer)) return false;
-  for (size_t i = 0; i < n; i++) callers[i] = temp[i];
-  callerCount = n;
-  localWhitelistVersion = newVer;
-  localWhitelistChecksum = actualChecksum;
+  // Skip dual-slot NVS rewrite when version matches and checksum is unknown or equal.
+  // (Checksum used to be RAM-only → after reboot length!=64 → rewrote every poll.)
+  // Do NOT return early: same poll still services smsJobs + remoteCommands below.
+  const bool sameWhitelist =
+      newVer == localWhitelistVersion &&
+      (localWhitelistChecksum.length() != 64 ||
+       localWhitelistChecksum.equalsIgnoreCase(actualChecksum));
 
-  // Download is not "synced" until the committed NVS image is acknowledged.
-  JsonDocument ackDoc;
-  ackDoc["version"] = localWhitelistVersion;
-  ackDoc["callerCount"] = callerCount;
-  ackDoc["whitelistChecksum"] = localWhitelistChecksum;
-  String ackBody;
-  serializeJson(ackDoc, ackBody);
-  String ackResponse;
-  if (!httpSigned(
-          "POST",
-          String("/gsm/device/") + DEVICE_ID + "/whitelist-ack",
-          ackBody,
-          ackResponse)) {
-    Serial.println("Whitelist: applied locally; acknowledgement pending");
+  if (sameWhitelist) {
+    if (!localWhitelistChecksum.equalsIgnoreCase(actualChecksum)) {
+      localWhitelistChecksum = actualChecksum;
+      persistWhitelistMeta(newVer, localWhitelistChecksum);
+    }
+    Serial.printf("Whitelist unchanged v%lld; skip NVS write\n", (long long)newVer);
+  } else {
+    if (!persistWhitelistAtomic(temp, n, newVer)) return false;
+    for (size_t i = 0; i < n; i++) callers[i] = temp[i];
+    callerCount = n;
+    localWhitelistVersion = newVer;
+    localWhitelistChecksum = actualChecksum;
+    persistWhitelistMeta(newVer, localWhitelistChecksum);
+
+    // Download is not "synced" until the committed NVS image is acknowledged.
+    JsonDocument ackDoc;
+    ackDoc["version"] = localWhitelistVersion;
+    ackDoc["callerCount"] = callerCount;
+    ackDoc["whitelistChecksum"] = localWhitelistChecksum;
+    String ackBody;
+    serializeJson(ackDoc, ackBody);
+    String ackResponse;
+    if (!httpSigned(
+            "POST",
+            String("/gsm/device/") + DEVICE_ID + "/whitelist-ack",
+            ackBody,
+            ackResponse)) {
+      Serial.println("Whitelist: applied locally; acknowledgement pending");
+    }
   }
 
   // Lease at most one job. Modem transmission continues non-blockingly in loop().
