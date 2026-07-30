@@ -66,7 +66,11 @@ bool sendATWait(const char *cmd, uint32_t waitMs = 3000);
 bool configureModem();
 bool detectModemBaud();
 bool bringUpModem(bool runConfigure);
+bool bringUpCellularData(bool quiet);
+void serviceWifiKeepAlive();
+void serviceCellularKeepAlive();
 String normalizePhoneNumber(const String &raw);
+String responseLineStartingWith(const String &prefix);
 
 // --- Pins (ESP32-S3 Screw Terminal Board) ---
 // Silkscreen usually says IO17 / IO18 / IO5 (or G17 / G18 / G5) — not "GPIO18".
@@ -286,6 +290,15 @@ String cellularPass;  // NVS optional PDP password
 // Install / debug: override day-hold schedule until AUTO
 enum class ScheduleOverride : uint8_t { Auto = 0, ForceDay = 1, ForceNight = 2 };
 ScheduleOverride scheduleOverride = ScheduleOverride::Auto;
+
+// Constant network: ESP Wi‑Fi station + optional SIM7600 4G data (not a Wi‑Fi AP)
+bool wifiKeepAlive = true;       // NVS wifiKeep — reconnect when dropped
+bool cellularDataKeepAlive = true;  // NVS cellKeep — re-attach PDP if APN set
+uint32_t lastWifiKeepAt = 0;
+uint32_t lastCellKeepAt = 0;
+constexpr uint32_t WIFI_KEEP_MS = 15000UL;    // retry Wi‑Fi every 15s when down
+constexpr uint32_t WIFI_RETRY_COOLDOWN_MS = 12000UL;
+constexpr uint32_t CELL_KEEP_MS = 120000UL;   // refresh 4G data every 2 min
 
 constexpr size_t MAX_CALLERS = 120;
 struct CallerEntry {
@@ -608,6 +621,8 @@ void loadCredentialsFromNvs() {
   localWhitelistVersion = prefs.getLong64("wl_ver", -1);
   localWhitelistChecksum = prefs.getString("wl_cksum", "");
   statusLedsUserEnabled = prefs.getBool("ledOn", true);
+  wifiKeepAlive = prefs.getBool("wifiKeep", true);
+  cellularDataKeepAlive = prefs.getBool("cellKeep", true);
   prefs.end();
 }
 
@@ -615,6 +630,20 @@ void saveStatusLedEnabled(bool on) {
   statusLedsUserEnabled = on;
   prefs.begin("sgpro", false);
   prefs.putBool("ledOn", on);
+  prefs.end();
+}
+
+void saveWifiKeepAlive(bool on) {
+  wifiKeepAlive = on;
+  prefs.begin("sgpro", false);
+  prefs.putBool("wifiKeep", on);
+  prefs.end();
+}
+
+void saveCellularKeepAlive(bool on) {
+  cellularDataKeepAlive = on;
+  prefs.begin("sgpro", false);
+  prefs.putBool("cellKeep", on);
   prefs.end();
 }
 
@@ -1052,20 +1081,9 @@ bool configureModem() {
     if (!sendATWait(command, 5000)) allOk = false;
   }
 
-  // Optional cellular data (API usually goes over Wi‑Fi). APN from NVS only —
-  // never hardcode carrier user/password in source.
+  // Optional cellular data (API usually goes over Wi‑Fi). APN from NVS only.
   if (cellularApn.length() > 0) {
-    String cgdcont = "AT+CGDCONT=1,\"IP\",\"" + cellularApn + "\"";
-    if (!sendATWait(cgdcont.c_str(), 5000)) allOk = false;
-    if (cellularUser.length() > 0) {
-      // PAP auth type 1 — credentials redacted in sendAT logs
-      String cgauth = "AT+CGAUTH=1,1,\"" + cellularUser + "\",\"" + cellularPass + "\"";
-      if (!sendATWait(cgauth.c_str(), 5000)) allOk = false;
-    }
-    if (!sendATWait("AT+CGATT=1", 30000)) allOk = false;
-    if (!sendATWait("AT+CGACT=1,1", 30000)) allOk = false;
-    if (!sendATWait("AT+CGPADDR=1", 5000)) allOk = false;
-    if (!sendATWait("AT+NETOPEN", 30000)) allOk = false;
+    if (!bringUpCellularData(false)) allOk = false;
   } else {
     Serial.println("MODEM: no APN in NVS — skip PDP (Serial: APN \"name\" [user] [pass])");
   }
@@ -1075,6 +1093,66 @@ bool configureModem() {
   if (!sendATWait("AT+CSCS=\"GSM\"", 5000)) allOk = false;
   sendATWait("AT+CGPS=1", 5000);
   return allOk;
+}
+
+// SIM7600 4G data (not Wi‑Fi). Keeps PDP/NETOPEN up when APN is provisioned.
+// Note: ESP Multicom API still uses ESP32 Wi‑Fi unless you add modem PPP later.
+bool bringUpCellularData(bool quiet) {
+  if (cellularApn.length() < 1) {
+    if (!quiet) Serial.println("CELL: no APN — Serial: APN \"live.vodafone.com\" [user] [pass]");
+    return false;
+  }
+  if (!quiet) Serial.printf("CELL: bringing up 4G data APN=\"%s\"\n", cellularApn.c_str());
+  bool ok = true;
+  String cgdcont = "AT+CGDCONT=1,\"IP\",\"" + cellularApn + "\"";
+  if (!sendATWait(cgdcont.c_str(), 5000)) ok = false;
+  if (cellularUser.length() > 0) {
+    String cgauth = "AT+CGAUTH=1,1,\"" + cellularUser + "\",\"" + cellularPass + "\"";
+    if (!sendATWait(cgauth.c_str(), 5000)) ok = false;
+  }
+  if (!sendATWait("AT+CGATT=1", 30000)) ok = false;
+  if (!sendATWait("AT+CGACT=1,1", 30000)) ok = false;
+  sendATWait("AT+CGPADDR=1", 5000);
+  // NETOPEN may return ERROR if already open — still treat as usable
+  if (!sendATWait("AT+NETOPEN", 30000)) {
+    if (!quiet) Serial.println("CELL: NETOPEN failed or already open — check AT+IPADDR");
+    sendATWait("AT+IPADDR", 5000);
+  } else if (!quiet) {
+    Serial.println("CELL: 4G data NETOPEN ok");
+  }
+  return ok;
+}
+
+void serviceWifiKeepAlive() {
+  if (!wifiKeepAlive || wifiSsid.length() < 1 || wifiBusy) return;
+  if (WiFi.status() == WL_CONNECTED) return;
+  if (lastWifiKeepAt != 0 && (millis() - lastWifiKeepAt) < WIFI_KEEP_MS) return;
+  lastWifiKeepAt = millis();
+  // Bypass normal rate-limit so site Wi‑Fi stays up
+  wifiLastAttemptMs = 0;
+  Serial.println("WiFi: keep-alive — reconnecting for constant link...");
+  ensureWifi();
+}
+
+void serviceCellularKeepAlive() {
+  if (!cellularDataKeepAlive || !modemReady || cellularApn.length() < 1) return;
+  if (ringPending || hangupPending || smsState != SmsState::idle) return;
+  if (lastCellKeepAt != 0 && (millis() - lastCellKeepAt) < CELL_KEEP_MS) return;
+  lastCellKeepAt = millis();
+  // Light check: re-assert attach; full bring-up if detached
+  if (!sendATWait("AT+CGATT?", 3000)) {
+    bringUpCellularData(true);
+    return;
+  }
+  // +CGATT: 1 means attached; if 0, full bring-up
+  String line = responseLineStartingWith("+CGATT:");
+  if (line.indexOf("0") >= 0 && line.indexOf("1") < 0) {
+    Serial.println("CELL: detached — re-attaching 4G data");
+    bringUpCellularData(true);
+  } else {
+    // Keep socket layer up
+    sendATWait("AT+NETOPEN", 10000);
+  }
 }
 
 String responseLineStartingWith(const String &prefix) {
@@ -1534,8 +1612,9 @@ void ensureWifi() {
   if (wifiBusy) {
     return;
   }
-  // Rate-limit retries from loop/SYNC (max once per 20s when offline)
-  if (wifiLastAttemptMs != 0 && (millis() - wifiLastAttemptMs) < 20000UL) {
+  // Rate-limit retries (shorter when keep-alive wants constant Wi‑Fi)
+  if (wifiLastAttemptMs != 0 &&
+      (millis() - wifiLastAttemptMs) < WIFI_RETRY_COOLDOWN_MS) {
     return;
   }
 
@@ -2358,6 +2437,30 @@ void handleSerialCmd() {
       } else if (buf == "RECONNECT") {
         Serial.println("WiFi: forced reconnect...");
         forceWifiReconnect();
+      } else if (buf == "WIFI KEEP ON") {
+        saveWifiKeepAlive(true);
+        wifiLastAttemptMs = 0;
+        lastWifiKeepAt = 0;
+        Serial.println("OK WiFi keep-alive ON (reconnect when dropped)");
+        ensureWifi();
+      } else if (buf == "WIFI KEEP OFF") {
+        saveWifiKeepAlive(false);
+        Serial.println("OK WiFi keep-alive OFF");
+      } else if (buf == "CELL KEEP ON") {
+        saveCellularKeepAlive(true);
+        lastCellKeepAt = 0;
+        Serial.println("OK SIM7600 4G data keep-alive ON (needs APN)");
+      } else if (buf == "CELL KEEP OFF") {
+        saveCellularKeepAlive(false);
+        Serial.println("OK SIM7600 4G data keep-alive OFF");
+      } else if (buf == "CELL DATA") {
+        if (!modemReady) {
+          Serial.println("ERR modem not ready — MODEM_RETRY first");
+        } else if (cellularApn.length() < 1) {
+          Serial.println("ERR set APN first: APN \"live.vodafone.com\" [user] [pass]");
+        } else {
+          bringUpCellularData(false);
+        }
       } else if (buf == "MODEM_HEX ON") {
         modemHexDiagnostics = true;
         Serial.println("OK modem raw hexadecimal diagnostics ON");
@@ -2418,7 +2521,8 @@ void handleSerialCmd() {
 #endif
       } else if (buf == "HELP") {
         Serial.println(
-            "cmds: PROVISION | WIFI | APN | DAY | NIGHT | HOLD OFF | AUTO | PULSE | "
+            "cmds: PROVISION | WIFI | WIFI KEEP ON/OFF | APN | CELL DATA | CELL KEEP ON/OFF | "
+            "DAY | NIGHT | HOLD OFF | AUTO | PULSE | "
             "LED ON | LED OFF | LED TEST | "
             "SYNC | STATUS | RECONNECT | MODEM_CHECK | MODEM_RETRY | MODEM_HEX ON/OFF | raw AT…");
       } else if (buf == "STATUS") {
@@ -2431,8 +2535,9 @@ void handleSerialCmd() {
             scheduleOverride == ScheduleOverride::ForceNight ? "NIGHT" : "AUTO";
         Serial.printf(
             "unit=%s secret=%s secretVer=%lu wifi=%s apn=%s wl_v=%lld n=%u wifi_up=%d "
-            "modem=%d pulse=%d hold_ap=%d hold_cut=%u pulse_cut=%u led=%d sched=%s "
-            "local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u uart RX=IO%u TX=IO%u\n",
+            "wifi_keep=%d cell_keep=%d modem=%d pulse=%d hold_ap=%d hold_cut=%u pulse_cut=%u "
+            "led=%d sched=%s local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u "
+            "uart RX=IO%u TX=IO%u\n",
             GATE_LABEL,
             deviceSecret.length() ? "yes" : "NO",
             (unsigned long)secretVersion,
@@ -2441,6 +2546,8 @@ void handleSerialCmd() {
             (long long)localWhitelistVersion,
             (unsigned)callerCount,
             WiFi.status() == WL_CONNECTED,
+            wifiKeepAlive,
+            cellularDataKeepAlive,
             modemReady,
             relayActive,
             dayHoldActive,
@@ -2572,6 +2679,9 @@ void loop() {
       Serial.println("MODEM: now ready after retry");
     }
   }
+  // Constant site Wi‑Fi + optional SIM7600 4G data (not a Wi‑Fi hotspot)
+  if (!callCritical) serviceWifiKeepAlive();
+  if (!callCritical) serviceCellularKeepAlive();
   delay(2);
 }
 
