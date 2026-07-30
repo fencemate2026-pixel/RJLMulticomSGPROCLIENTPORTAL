@@ -31,14 +31,23 @@
 
 // Freenove 8 RGB (WS2812) status bar — built in; hardware optional.
 // GREEN = open/opening, RED = close/closing. DIN→IO8, VCC→5V, GND→GND.
-// Compile-time off: #define STATUS_LED_ENABLE 0  (no Adafruit NeoPixel needed)
-// Runtime off (no reflash): Serial  LED OFF   |  LED ON  |  LED TEST
+// Compile-time off: #define STATUS_LED_ENABLE 0
+// Runtime off: Serial LED OFF | LED ON | LED TEST
+// If Adafruit NeoPixel is not installed, sketch still compiles (LEDs no-op).
 #ifndef STATUS_LED_ENABLE
 #define STATUS_LED_ENABLE 1
 #endif
 
 #if STATUS_LED_ENABLE
-#include <Adafruit_NeoPixel.h>
+#  if defined(__has_include) && __has_include(<Adafruit_NeoPixel.h>)
+#    include <Adafruit_NeoPixel.h>
+#    define STATUS_LED_HW 1
+#  else
+#    define STATUS_LED_HW 0
+#    pragma message("Adafruit NeoPixel not installed — LEDs disabled. Library Manager: Adafruit NeoPixel")
+#  endif
+#else
+#  define STATUS_LED_HW 0
 #endif
 
 // Explicit prototypes (do not rely on Arduino auto-prototype ordering).
@@ -183,7 +192,7 @@ bool statusLedWasOpen = false;
 uint32_t statusLedClosingUntil = 0;
 uint32_t lastStatusLedTick = 0;
 bool statusLedsUserEnabled = true;  // NVS "ledOn"; Serial LED ON/OFF
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
 Adafruit_NeoPixel statusLeds(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_GRB + NEO_KHZ800);
 #endif
 // After day HOLD ends: multi-strike SAFE-OFF so AP cannot stick (Mildura-class)
@@ -329,7 +338,7 @@ void relaysInit() {
 // Built into firmware. Module optional — leave unplugged if unused.
 // Gate "open command" = day HOLD (AP) or night PULSE (PP). Not motor limit switches.
 void statusLedsInit() {
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
   statusLeds.begin();
   statusLeds.setBrightness(STATUS_LED_BRIGHTNESS);
   statusLeds.clear();
@@ -338,13 +347,16 @@ void statusLedsInit() {
       "LED: built-in status IO%u — GREEN=open RED=close | user=%s | LED ON/OFF/TEST\n",
       (unsigned)STATUS_LED_PIN,
       statusLedsUserEnabled ? "ON" : "OFF");
+#elif STATUS_LED_ENABLE
+  Serial.println(
+      "LED: Adafruit NeoPixel not installed — gate OK; install library for LED bar");
 #else
   Serial.println("LED: compiled out (STATUS_LED_ENABLE=0)");
 #endif
 }
 
 static void statusLedsFill(uint8_t r, uint8_t g, uint8_t b) {
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
   const uint32_t c = statusLeds.Color(r, g, b);
   for (uint8_t i = 0; i < STATUS_LED_COUNT; i++) statusLeds.setPixelColor(i, c);
   statusLeds.show();
@@ -356,14 +368,14 @@ static void statusLedsFill(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static void statusLedsBlank() {
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
   statusLeds.clear();
   statusLeds.show();
 #endif
 }
 
 void serviceStatusLeds() {
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
   if (millis() - lastStatusLedTick < STATUS_LED_TICK_MS) return;
   lastStatusLedTick = millis();
 
@@ -2387,7 +2399,7 @@ void handleSerialCmd() {
         statusLedsBlank();
         Serial.println("OK LED status bar OFF (saved) — gate logic unchanged");
       } else if (buf == "LED TEST") {
-#if STATUS_LED_ENABLE
+#if STATUS_LED_HW
         Serial.println("LED TEST: green 1s → red 1s → restore");
         statusLedsUserEnabled = true;
         statusLedsFill(0, 255, 0);
@@ -2401,7 +2413,8 @@ void handleSerialCmd() {
         prefs.end();
         Serial.printf("LED TEST done; user=%s\n", statusLedsUserEnabled ? "ON" : "OFF");
 #else
-        Serial.println("ERR LED compiled out (STATUS_LED_ENABLE=0)");
+        Serial.println(
+            "ERR LEDs unavailable — install Library: Adafruit NeoPixel, then re-upload");
 #endif
       } else if (buf == "HELP") {
         Serial.println(
