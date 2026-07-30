@@ -483,20 +483,36 @@ export const gsmDeviceApi = onRequest(
         );
         const callersSnap = await accountRef.collection("gsmCallers").get();
         const now = Date.now();
+        // Always emit canonical E.164 (+614…). ESP rejects non-+ numbers.
+        // Bad/legacy rows are dropped here so a bad phone never bricks the list.
         const callers = callersSnap.docs
           .map((d) => {
             const data = d.data() as FirebaseFirestore.DocumentData;
             return { id: d.id, data };
           })
           .filter((c) => isCallerActive({ id: c.id, ...c.data }, now))
-          .map((c) => ({
-            id: c.id,
-            name: String(c.data.displayName || c.data.name || ""),
-            phoneNumberE164: String(c.data.phoneNumberE164 || ""),
-            enabled: true,
-            validFrom: c.data.validFrom?.toDate?.()?.toISOString?.() ?? null,
-            validUntil: c.data.validUntil?.toDate?.()?.toISOString?.() ?? null,
-          }));
+          .map((c) => {
+            const e164 = normalizeAustralianMobile(
+              String(c.data.phoneNumberE164 || c.data.phoneNumber || "")
+            );
+            if (!e164) return null;
+            return {
+              id: c.id,
+              name: String(c.data.displayName || c.data.name || ""),
+              phoneNumberE164: e164,
+              enabled: true,
+              validFrom: c.data.validFrom?.toDate?.()?.toISOString?.() ?? null,
+              validUntil: c.data.validUntil?.toDate?.()?.toISOString?.() ?? null,
+            };
+          })
+          .filter(Boolean) as Array<{
+            id: string;
+            name: string;
+            phoneNumberE164: string;
+            enabled: boolean;
+            validFrom: string | null;
+            validUntil: string | null;
+          }>;
         const whitelistChecksum = crypto
           .createHash("sha256")
           .update(JSON.stringify(callers))

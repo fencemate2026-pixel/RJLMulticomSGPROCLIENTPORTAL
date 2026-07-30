@@ -1,0 +1,102 @@
+Thomastown Settlement Rd — authorised GSM mobiles (E.164 for Multicom/ESP)
+Source: CommercialWhitelistSeed.kt
+Gate SIM people DIAL: 0414 371 302 (+61414371302) — not a whitelist entry
+ESP/cloud storage format: +614xxxxxxxx  (Caller ID must be visible)
+
+SEED_ROWS=92  UNIQUE_E164=89  BAD=0
+
+E.164           Local        Unit       Name
+------------------------------------------------------------------------
++61400101132    0400101132   RJL        RJL Admin
++61400331510    0400331510   10         Angelo Halarakis
++61400510989    0400510989   20         Zhen Wei
++61401377373    0401377373   21         Hannah Loney
++61401755211    0401755211   17         Jaiden Nardella
++61402556082    0402556082   6          Duncan Craig
++61402696870    0402696870   3          Suki Tan
++61402747740    0402747740   19         Laura Voskresensky
++61403311435    0403311435   1          Robert Ozzimo
++61404121218    0404121218   20         Weiwei Lu
++61404557314    0404557314   2          Jake Osborne
++61406180888    0406180888   21         Jake
++61407208391    0407208391   18         Gavin Walsh
++61407673744    0407673744   2          Brent Richardson
++61407985503    0407985503   1          Nick Duryea
++61409188922    0409188922   17         Trish Nardella
++61410043746    0410043746   8          Adam Griffiths
++61410655145    0410655145   1          Emilia Faba
++61411722094    0411722094   1          Nicole Jahne
++61412004157    0412004157   19         Brendon Vuntarde
++61412207078    0412207078   13/14      Pina Zagami
++61412247769    0412247769   12         Sarah Erulkar
++61412250078    0412250078   12         Francesca Ligabo
++61412333271    0412333271   12         Tania Fyffe
++61412411678    0412411678   13/14      Bart Zagami
++61412466888    0412466888   11         Tony Ciantar
++61413246704    0413246704   12         Bernadene Voss
++61413857837    0413857837   1          Michael Cananzi
++61413992297    0413992297   22         Carli Bates
++61414284143    0414284143   12         Natalie Jones
++61414698309    0414698309   12         Tina Kladis
++61415334687    0415334687   19         Marecel Nedim
++61416339339    0416339339   12         Leigh Villanti
++61416574839    0416574839   1          Andrew DeSanto
++61417102131    0417102131   21         Karlie
++61417169900    0417169900   21         Jo
++61417389882    0417389882   10         Maria-Louise Culcasi
++61418175165    0418175165   6          Giuseppe Tirella
++61419305556    0419305556   19|19      Christopher Terpos
++61419333747    0419333747   12         Feona Wadsworth
++61420404660    0420404660   12         Ibrahim Karabulut
++61420418089    0420418089   11         Jake Ciantar
++61420510192    0420510192   12         Maria Quigley
++61421152494    0421152494   13/14      Robert Zagami
++61421232029    0421232029   1          George Ioannou
++61421706508    0421706508   16         Peter Chrysostomou
++61422039096    0422039096   3          Joseph
++61422320108    0422320108   9          Qing Qin Zeng
++61422741385    0422741385   21         Dean Loney
++61423214750    0423214750   2          Dean Richardson
++61423241974    0423241974   1          Mario Tucci
++61423424334    0423424334   21         Alex Stanton
++61423643618    0423643618   13/14      Gabriella Costantino
++61427637130    0427637130   1          Lachlan Mills
++61428284555    0428284555   8          Steve Callanan
++61430000440    0430000440   9          Tony Paravizzini
++61432017351    0432017351   13/14      Vanessa Zagami
++61432105574    0432105574   21         Jim Seltsiotis
++61432115212    0432115212   2          Danny King
++61432121170    0432121170   1          Christina Ioannou
++61432141362    0432141362   13/14      Anthony Costantino
++61432515416    0432515416   27         Terence Jape
++61432643585    0432643585   10         Simon Rashleigh
++61432972737    0432972737   25|25      Tilak Dave
++61433223278    0433223278   1          Tony Lombardi
++61433330790    0433330790   18         Craig Martin
++61433854243    0433854243   4          Tracey Lauretta
++61434147247    0434147247   8          Patricia Higgins
++61434405072    0434405072   2          Scott Brearley
++61438164232    0438164232   1          Daniel Taylor
++61438542956    0438542956   22         John Grant
++61438580195    0438580195   9          Kathy Meyzis
++61439115835    0439115835   1          Lenita Rametta
++61439119784    0439119784   19         Lisa Michalson
++61439394754    0439394754   1          Belinda Grech
++61448100000    0448100000   19         Garth Michalson
++61448151014    0448151014   1          Joel Viavattene
++61449094844    0449094844   1          Paul Rametta
++61450603541    0450603541   22         Stephen Tracey
++61452191561    0452191561   25|25      SAUMYA
++61452578046    0452578046   20         Yuxin Yang
++61455501293    0455501293   1          Travis Whelan
++61456203040    0456203040   1          Sherry Singh
++61467341830    0467341830   1          Tyler Burgess
++61478961783    0478961783   20         Jie Huang
++61481227364    0481227364   19         Tanya Yako
++61488171088    0488171088   12         James Loo
++61494580646    0494580646   12         Sarah E (Vol)
++61497808484    0497808484   1          Michael Cetrola
+
+RJL admin: +61400101132 (0400 101 132)
+Duplicates in seed are collapsed to one ESP entry (first name wins).
+

@@ -78,6 +78,25 @@ C) SERIAL BRING-UP (115200 NL)
     SHA256( secret + ":" + deviceId )
 
 --------------------------------------------------------------------------------
+C2) MOBILE NUMBERS (whitelist)
+--------------------------------------------------------------------------------
+  Authorised callers live in Multicom / Firebase gsmCallers (not Magic Keys).
+  Full validated list (89 unique E.164 from seed sheet):
+    THOMASTOWN-CALLERS-E164.txt
+    THOMASTOWN-CALLERS-E164.csv
+
+  Every number must be: +614xxxxxxxx
+  On ESP after SYNC: STATUS shows n= (count). Should be ~89 if cloud matches seed.
+
+  Gate SIM people DIAL (not a whitelist entry): 0414 371 302 = +61414371302
+  RJL admin on list: 0400 101 132 = +61400101132
+
+  If n=0 after SYNC: secret/device wrong or cloud empty — fix Multicom list first.
+  Live cloud audit (needs Firebase re-auth):
+    node scripts/audit-gsm-callers.js
+    node scripts/audit-gsm-callers.js --fix
+
+--------------------------------------------------------------------------------
 D) WHAT IT DOES
 --------------------------------------------------------------------------------
   Day 06:00–18:00 Melbourne  HOLD ON (AP) — gate held open
