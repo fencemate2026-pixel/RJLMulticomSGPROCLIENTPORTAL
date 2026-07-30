@@ -151,6 +151,16 @@ String modemLine;
 bool relayActive = false;       // short night pulse in progress
 uint32_t relayOffAt = 0;
 bool dayHoldActive = false;     // ESP constant-ON day hold (06:00–18:00 local)
+// After day HOLD ends: multi-strike SAFE-OFF so AP cannot stick (Mildura-class)
+uint8_t postHoldCutStrikesLeft = 0;
+uint32_t nextPostHoldCutAt = 0;
+constexpr uint8_t POST_HOLD_CUT_STRIKES = 20;       // 20 hard OFF writes
+constexpr uint32_t POST_HOLD_CUT_INTERVAL_MS = 100;  // over ~2 s
+// After night pulse ends: same multi-strike on PP
+uint8_t postPulseCutStrikesLeft = 0;
+uint32_t nextPostPulseCutAt = 0;
+constexpr uint8_t POST_PULSE_CUT_STRIKES = 10;
+constexpr uint32_t POST_PULSE_CUT_INTERVAL_MS = 50;
 uint32_t lastScheduleTick = 0;
 bool ringPending = false;
 bool firstRingObserved = false;
@@ -310,23 +320,88 @@ bool isDayHoldWindow() {
   return mins >= openM && mins < closeM;
 }
 
+// Drive both dry-contact relays OFF (command side). Multi-write for sticky drivers.
+void forceRelaysAllOffPins() {
+  setHoldRelay(false);
+  setPulseRelay(false);
+  setHoldRelay(false);
+  setPulseRelay(false);
+}
+
+// Start thorough post-hold release: many OFF strikes so AP cannot stick open.
+void beginPostHoldReleaseReset(const char *reason) {
+  relayActive = false;
+  postPulseCutStrikesLeft = 0;
+  postHoldCutStrikesLeft = POST_HOLD_CUT_STRIKES;
+  nextPostHoldCutAt = millis();
+  forceRelaysAllOffPins();
+  Serial.printf(
+      "RELAY: HOLD RELEASE RESET start (%s) — %u hard OFF strikes on AP+PP\n",
+      reason ? reason : "hold_off",
+      (unsigned)POST_HOLD_CUT_STRIKES);
+}
+
+void beginPostPulseReleaseReset() {
+  postPulseCutStrikesLeft = POST_PULSE_CUT_STRIKES;
+  nextPostPulseCutAt = millis();
+  setPulseRelay(false);
+  if (!dayHoldActive) setHoldRelay(false);
+  Serial.printf("RELAY: PULSE RELEASE RESET start — %u hard OFF strikes on PP\n",
+                (unsigned)POST_PULSE_CUT_STRIKES);
+}
+
+void serviceReleaseResets() {
+  // Post day-hold: keep hammering both OFF for ~2s (Mildura stuck-open class)
+  if (postHoldCutStrikesLeft > 0 && !dayHoldActive) {
+    if ((int32_t)(millis() - nextPostHoldCutAt) >= 0) {
+      nextPostHoldCutAt = millis() + POST_HOLD_CUT_INTERVAL_MS;
+      relayActive = false;
+      forceRelaysAllOffPins();
+      postHoldCutStrikesLeft--;
+      if (postHoldCutStrikesLeft == 0) {
+        Serial.println("RELAY: HOLD RELEASE RESET complete — AP+PP confirmed OFF path");
+      }
+    }
+  } else if (dayHoldActive) {
+    postHoldCutStrikesLeft = 0;  // day again cancels night release sequence
+  }
+
+  // Post night pulse: hammer PP OFF (and HOLD off if night)
+  if (postPulseCutStrikesLeft > 0 && !relayActive) {
+    if ((int32_t)(millis() - nextPostPulseCutAt) >= 0) {
+      nextPostPulseCutAt = millis() + POST_PULSE_CUT_INTERVAL_MS;
+      setPulseRelay(false);
+      if (!dayHoldActive) setHoldRelay(false);
+      postPulseCutStrikesLeft--;
+      if (postPulseCutStrikesLeft == 0) {
+        Serial.println("RELAY: PULSE RELEASE RESET complete — PP OFF path");
+      }
+    }
+  }
+}
+
 void applyDayHold(bool want) {
   if (want == dayHoldActive) {
-    if (want) setHoldRelay(true);  // re-assert hold contact
+    if (want) {
+      setHoldRelay(true);   // re-assert hold contact
+      setPulseRelay(false);
+    }
     return;
   }
   dayHoldActive = want;
   if (dayHoldActive) {
-    // End any night pulse; assert AP hold only
+    // Enter day: kill any night pulse, cancel release sequences, assert AP hold
+    postHoldCutStrikesLeft = 0;
+    postPulseCutStrikesLeft = 0;
     relayActive = false;
     setPulseRelay(false);
     setHoldRelay(true);
     Serial.println("SCHED: DAY — HOLD relay ON (AP–COM constant)");
   } else {
-    setHoldRelay(false);
-    relayActive = false;
-    setPulseRelay(false);
-    Serial.println("SCHED: NIGHT — HOLD off; dial uses PULSE relay (PP–COM 3s)");
+    // Leave day hold → thorough unit reset of both command relays
+    dayHoldActive = false;
+    beginPostHoldReleaseReset("day_hold_ended");
+    Serial.println("SCHED: NIGHT — HOLD released; thorough SAFE-OFF; dial uses PULSE 3s");
   }
 }
 
@@ -350,14 +425,20 @@ void startRelayPulse() {
     return;
   }
   if (relayActive) return;  // one pulse per call window
+  // Cancel any leftover release strikes so pulse can engage
+  postHoldCutStrikesLeft = 0;
+  postPulseCutStrikesLeft = 0;
   relayActive = true;
   relayOffAt = millis() + RELAY_PULSE_MS;
+  setHoldRelay(false);
   setPulseRelay(true);
   Serial.printf("RELAY: PULSE ON IO%u  %lums (PP–COM)\n",
                 (unsigned)RELAY_PULSE_PIN, (unsigned long)RELAY_PULSE_MS);
 }
 
 void updateRelay() {
+  serviceReleaseResets();
+
   // Mildura lesson: always drive known-safe GPIO state every tick.
   // Never leave HOLD (AP) or PULSE (PP) "assumed off" after a one-shot write.
   if (dayHoldActive) {
@@ -373,11 +454,12 @@ void updateRelay() {
       relayActive = false;
       setPulseRelay(false);
       Serial.println("RELAY: PULSE OFF (PP–COM open)");
+      beginPostPulseReleaseReset();
     } else {
       setPulseRelay(true);  // re-assert during timed pulse
     }
-  } else {
-    setPulseRelay(false);   // re-assert PP open when not pulsing
+  } else if (postHoldCutStrikesLeft == 0 && postPulseCutStrikesLeft == 0) {
+    setPulseRelay(false);   // steady night idle: PP open
   }
 }
 
@@ -2148,8 +2230,8 @@ void handleSerialCmd() {
             scheduleOverride == ScheduleOverride::ForceNight ? "NIGHT" : "AUTO";
         Serial.printf(
             "unit=%s secret=%s secretVer=%lu wifi=%s apn=%s wl_v=%lld n=%u wifi_up=%d "
-            "modem=%d pulse=%d hold_ap=%d sched=%s local=%02d:%02d clock_ok=%d "
-            "pins hold=IO%u pulse=IO%u uart RX=IO%u TX=IO%u\n",
+            "modem=%d pulse=%d hold_ap=%d hold_cut=%u pulse_cut=%u sched=%s "
+            "local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u uart RX=IO%u TX=IO%u\n",
             GATE_LABEL,
             deviceSecret.length() ? "yes" : "NO",
             (unsigned long)secretVersion,
@@ -2161,6 +2243,8 @@ void handleSerialCmd() {
             modemReady,
             relayActive,
             dayHoldActive,
+            (unsigned)postHoldCutStrikesLeft,
+            (unsigned)postPulseCutStrikesLeft,
             ov,
             t.tm_hour, t.tm_min,
             clockLooksValid(),
