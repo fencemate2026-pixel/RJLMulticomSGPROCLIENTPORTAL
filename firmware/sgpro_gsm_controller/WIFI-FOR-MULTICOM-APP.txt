@@ -1,0 +1,77 @@
+================================================================================
+  Wi‑Fi for Multicom app only (Thomastown / SG-PRO ESP32)
+================================================================================
+
+WHAT YOU NEED
+  The Multicom / SG‑PRO phone app and cloud whitelist use the ESP32 Wi‑Fi
+  connection to Multicom/Firebase.
+
+  You do NOT need SIM7600 “Wi‑Fi” or 4G data for the app.
+  SIM7600 is only for: gate calls (dial-to-open) and welcome SMS.
+
+  Constant link for the app = ESP station Wi‑Fi + keep-alive ON.
+
+--------------------------------------------------------------------------------
+1) SERIAL (115200, Newline) — do this after flash
+--------------------------------------------------------------------------------
+  WIFI "YourWifiName" YourWifiPassword
+  WIFI KEEP ON
+  PROVISION your-long-secret-min-16-chars
+  SYNC
+  STATUS
+
+  Optional check:
+    RECONNECT
+    HELP
+
+--------------------------------------------------------------------------------
+2) WHAT STATUS SHOULD SHOW
+--------------------------------------------------------------------------------
+  wifi=yes          (SSID stored)
+  wifi_up=1         (connected right now)
+  wifi_keep=1       (auto-reconnect when dropped — default ON)
+  secret=yes
+  n=…               (caller count after SYNC; ~89 if full list)
+
+  If wifi_up=0:
+    - SSID must be 2.4 GHz (ESP32-S3 has no 5 GHz)
+    - Password correct
+    - In range of AP
+    - Type: RECONNECT   or   WIFI KEEP ON
+
+--------------------------------------------------------------------------------
+3) KEEP-ALIVE (already in firmware)
+--------------------------------------------------------------------------------
+  WIFI KEEP ON     Save + enable auto reconnect (~every 15s when offline)
+  WIFI KEEP OFF    Disable auto reconnect (not recommended on site)
+
+  Default after flash: wifi_keep is ON (stored in NVS once set).
+
+--------------------------------------------------------------------------------
+4) DO NOT BOTHER WITH (for Multicom app only)
+--------------------------------------------------------------------------------
+  APN …
+  CELL DATA
+  CELL KEEP ON/OFF
+
+  Those are SIM7600 4G data. Not required for the phone app.
+
+--------------------------------------------------------------------------------
+5) MODEM (separate from app Wi‑Fi)
+--------------------------------------------------------------------------------
+  When modem cable is fitted:
+    MODEM_RETRY
+    MODEM_CHECK
+
+  That is for night dial-to-open + SMS only.
+
+--------------------------------------------------------------------------------
+6) SITE REMINDER
+--------------------------------------------------------------------------------
+  App list add/delete → Multicom cloud → ESP SYNC/poll over Wi‑Fi
+  Gate open by phone call → SIM7600 + whitelist on ESP (local)
+
+  Wiring: see WIRING-DIAGRAM.md / WIRING-DIAGRAM-FULL.jpg
+  Flash:  see FLASH-NOW.txt
+
+================================================================================

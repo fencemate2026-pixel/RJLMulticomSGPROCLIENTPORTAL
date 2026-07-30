@@ -55,6 +55,18 @@ B) ON-SITE WIRING (power OFF motor if unsure)
     Arduino Library Manager: Adafruit NeoPixel
     Disable: #define STATUS_LED_ENABLE 0  near top of .ino
 
+
+--------------------------------------------------------------------------------
+C1) Wi‑Fi for Multicom app only
+--------------------------------------------------------------------------------
+  See: WIFI-FOR-MULTICOM-APP.txt
+  Short version:
+    WIFI "ssid" password
+    WIFI KEEP ON
+    PROVISION secret
+    SYNC
+    STATUS   → want wifi_up=1 wifi_keep=1
+  No SIM7600 data/APN needed for the phone app.
 --------------------------------------------------------------------------------
 C) SERIAL BRING-UP (115200 NL)
 --------------------------------------------------------------------------------
@@ -138,3 +150,4 @@ F) IF UPLOAD FAILS
   Lower upload speed. Confirm ESP32-S3.
 
 ================================================================================
+
