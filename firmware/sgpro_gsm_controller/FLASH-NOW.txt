@@ -48,6 +48,13 @@ B) ON-SITE WIRING (power OFF motor if unsure)
     Relay PULSE IO5 NO/COM  →  Roger PP (14) + COM (17)   night 3s open
     Coil side GND with ESP GND; contacts float dry to Roger.
 
+  Optional Freenove 8 RGB (WS2812) status bar:
+    VCC → 5V   GND → GND   DIN → IO8
+    GREEN = open / opening (day HOLD or night PULSE)
+    RED   = closing / closed
+    Arduino Library Manager: Adafruit NeoPixel
+    Disable: #define STATUS_LED_ENABLE 0  near top of .ino
+
 --------------------------------------------------------------------------------
 C) SERIAL BRING-UP (115200 NL)
 --------------------------------------------------------------------------------
