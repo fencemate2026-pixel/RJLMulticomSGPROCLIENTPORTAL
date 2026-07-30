@@ -358,17 +358,26 @@ void startRelayPulse() {
 }
 
 void updateRelay() {
-  // Day hold path: keep AP contact closed; pulse channel stays off
+  // Mildura lesson: always drive known-safe GPIO state every tick.
+  // Never leave HOLD (AP) or PULSE (PP) "assumed off" after a one-shot write.
   if (dayHoldActive) {
-    setHoldRelay(true);
-    if (!relayActive) setPulseRelay(false);
+    setHoldRelay(true);       // day: AP held
+    setPulseRelay(false);     // day: PP must stay open (no sticky pulse)
+    relayActive = false;      // cancel any night pulse state during day window
     return;
   }
-  // Night pulse path
-  if (relayActive && (int32_t)(millis() - relayOffAt) >= 0) {
-    relayActive = false;
-    setPulseRelay(false);
-    Serial.println("RELAY: PULSE OFF (PP–COM open)");
+  // Night: AP must NEVER stick closed (would hold gate open like Mildura)
+  setHoldRelay(false);
+  if (relayActive) {
+    if ((int32_t)(millis() - relayOffAt) >= 0) {
+      relayActive = false;
+      setPulseRelay(false);
+      Serial.println("RELAY: PULSE OFF (PP–COM open)");
+    } else {
+      setPulseRelay(true);  // re-assert during timed pulse
+    }
+  } else {
+    setPulseRelay(false);   // re-assert PP open when not pulsing
   }
 }
 
@@ -1657,28 +1666,30 @@ void queueCallEvent(const String &e164, bool authorised, bool relay, const char 
 
 void processPendingCallEvent() {
   if (!pendingCallEvent.pending || relayActive) return;
-  PendingCallEvent event = pendingCallEvent;
-  pendingCallEvent.pending = false;
   ensureWifi();
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("EVENT: offline; call event not uploaded");
+    // Keep pending — do not drop (Mildura-class: lost evidence / silent fail)
+    Serial.println("EVENT: offline; will retry call event upload");
     return;
   }
   JsonDocument doc;
-  doc["callerNumberE164"] = event.callerNumberE164;
-  doc["authorised"] = event.authorised;
-  doc["relayTriggered"] = event.relayTriggered;
-  doc["rejectionReason"] = event.rejectionReason;
-  if (event.matchedCallerId.length()) {
-    doc["matchedCallerId"] = event.matchedCallerId;
-    doc["matchedCallerName"] = event.matchedCallerName;
+  doc["callerNumberE164"] = pendingCallEvent.callerNumberE164;
+  doc["authorised"] = pendingCallEvent.authorised;
+  doc["relayTriggered"] = pendingCallEvent.relayTriggered;
+  doc["rejectionReason"] = pendingCallEvent.rejectionReason;
+  if (pendingCallEvent.matchedCallerId.length()) {
+    doc["matchedCallerId"] = pendingCallEvent.matchedCallerId;
+    doc["matchedCallerName"] = pendingCallEvent.matchedCallerName;
   }
   String body;
   serializeJson(doc, body);
   String response;
   if (!httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/events", body, response)) {
-    Serial.println("EVENT: upload failed");
+    Serial.println("EVENT: upload failed; will retry");
+    return;
   }
+  pendingCallEvent.pending = false;
+  pendingCallEvent = {};
 }
 
 // -- Call path (local only -- never waits for cloud) ----------------------------------------
@@ -1761,11 +1772,10 @@ void serviceHangup() {
   if (hangupAttempts >= HANGUP_MAX_ATTEMPTS) {
     Serial.println("CALL: AT+CHUP result: timeout");
     hangupPending = false;
-    // Never drop day-hold AP; only abort a night pulse if one was left on
-    if (!dayHoldActive) {
-      setPulseRelay(false);
-      relayActive = false;
-    }
+    // Always force PP off; never touch day HOLD incorrectly
+    relayActive = false;
+    setPulseRelay(false);
+    if (!dayHoldActive) setHoldRelay(false);
     return;
   }
   sendAT("AT+CHUP");
