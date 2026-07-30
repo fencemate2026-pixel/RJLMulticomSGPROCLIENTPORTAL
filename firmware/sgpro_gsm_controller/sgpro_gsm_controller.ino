@@ -16,6 +16,7 @@
  * Secrets: Serial "PROVISION <secret>" → NVS. Never commit DEVICE_SECRET.
  *
  * Libraries: ArduinoJson, Preferences, WiFi, HTTPClient, mbedTLS
+ * Optional: Adafruit NeoPixel (Freenove 8 RGB WS2812 status bar)
  */
 
 #include <Arduino.h>
@@ -28,6 +29,16 @@
 #include <esp_random.h>
 #include <time.h>
 
+// Freenove 8 RGB (WS2812) status bar: GREEN = opening/open, RED = closing/closed
+// Set 0 if no LED module fitted (saves library dependency when disabled).
+#ifndef STATUS_LED_ENABLE
+#define STATUS_LED_ENABLE 1
+#endif
+
+#if STATUS_LED_ENABLE
+#include <Adafruit_NeoPixel.h>
+#endif
+
 // Explicit prototypes (do not rely on Arduino auto-prototype ordering).
 void resetIncomingCallState();
 void hangUpCall();
@@ -37,6 +48,8 @@ void syncNtpClock();
 void updateDayHoldSchedule();
 void startRelayPulse();
 void updateRelay();
+void statusLedsInit();
+void serviceStatusLeds();
 bool sendATWait(const char *cmd, uint32_t waitMs = 3000);
 bool configureModem();
 bool detectModemBaud();
@@ -65,6 +78,14 @@ uint8_t modemTxPin = MODEM_TX_PIN;
 constexpr uint8_t RELAY_HOLD_PIN = 4;   // day: constant → Roger AP–COM
 constexpr uint8_t RELAY_PULSE_PIN = 5;  // night: 3s pulse → Roger PP–COM
 constexpr bool RELAY_ACTIVE_HIGH = true;
+
+// Freenove 8 RGB LED module (WS2812 DIN) — status only, not gate control
+//   VCC→5V  GND→GND  DIN→IO8
+constexpr uint8_t STATUS_LED_PIN = 8;
+constexpr uint8_t STATUS_LED_COUNT = 8;
+constexpr uint8_t STATUS_LED_BRIGHTNESS = 40;  // 0–255; keep modest in cabinet
+constexpr uint32_t STATUS_LED_CLOSING_MS = 4000;  // show red "closing" after open ends
+constexpr uint32_t STATUS_LED_TICK_MS = 40;
 
 constexpr uint32_t USB_BAUD = 115200;
 constexpr uint32_t MODEM_BAUD_DEFAULT = 115200;
@@ -151,6 +172,13 @@ String modemLine;
 bool relayActive = false;       // short night pulse in progress
 uint32_t relayOffAt = 0;
 bool dayHoldActive = false;     // ESP constant-ON day hold (06:00–18:00 local)
+// Status LEDs: track open→close so bar shows green open / red closing
+bool statusLedWasOpen = false;
+uint32_t statusLedClosingUntil = 0;
+uint32_t lastStatusLedTick = 0;
+#if STATUS_LED_ENABLE
+Adafruit_NeoPixel statusLeds(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_GRB + NEO_KHZ800);
+#endif
 // After day HOLD ends: multi-strike SAFE-OFF so AP cannot stick (Mildura-class)
 uint8_t postHoldCutStrikesLeft = 0;
 uint32_t nextPostHoldCutAt = 0;
@@ -288,6 +316,79 @@ void relaysInit() {
   pinMode(RELAY_PULSE_PIN, OUTPUT);
   setHoldRelay(false);
   setPulseRelay(false);
+}
+
+// ── Status LEDs (Freenove 8× WS2812): GREEN open/opening, RED close/closing ──
+// Gate "open command" = day HOLD (AP) or night PULSE (PP). Not motor limit switches.
+void statusLedsInit() {
+#if STATUS_LED_ENABLE
+  statusLeds.begin();
+  statusLeds.setBrightness(STATUS_LED_BRIGHTNESS);
+  statusLeds.clear();
+  statusLeds.show();
+  Serial.printf(
+      "LED: Freenove 8 RGB on IO%u — GREEN=open/opening RED=close/closing\n",
+      (unsigned)STATUS_LED_PIN);
+#else
+  Serial.println("LED: status bar disabled (STATUS_LED_ENABLE=0)");
+#endif
+}
+
+static void statusLedsFill(uint8_t r, uint8_t g, uint8_t b) {
+#if STATUS_LED_ENABLE
+  const uint32_t c = statusLeds.Color(r, g, b);
+  for (uint8_t i = 0; i < STATUS_LED_COUNT; i++) statusLeds.setPixelColor(i, c);
+  statusLeds.show();
+#else
+  (void)r;
+  (void)g;
+  (void)b;
+#endif
+}
+
+void serviceStatusLeds() {
+#if STATUS_LED_ENABLE
+  if (millis() - lastStatusLedTick < STATUS_LED_TICK_MS) return;
+  lastStatusLedTick = millis();
+
+  // Commanded open: day hold or night open pulse
+  const bool openCmd = dayHoldActive || relayActive;
+  const bool releasing =
+      postHoldCutStrikesLeft > 0 || postPulseCutStrikesLeft > 0;
+
+  if (openCmd) {
+    statusLedWasOpen = true;
+    statusLedClosingUntil = 0;
+    // Opening pulse = brighter green chase feel via full green; held open = solid green
+    if (relayActive && !dayHoldActive) {
+      // Night opening pulse: solid green
+      statusLedsFill(0, 255, 0);
+    } else {
+      // Day hold open: solid green
+      statusLedsFill(0, 200, 0);
+    }
+    return;
+  }
+
+  // Transition open → off: show closing red for a few seconds + during cut strikes
+  if (statusLedWasOpen || releasing) {
+    if (statusLedWasOpen) {
+      statusLedWasOpen = false;
+      statusLedClosingUntil = millis() + STATUS_LED_CLOSING_MS;
+      Serial.println("LED: CLOSING (red)");
+    }
+    if (releasing ||
+        (statusLedClosingUntil != 0 &&
+         (int32_t)(millis() - statusLedClosingUntil) < 0)) {
+      statusLedsFill(255, 0, 0);  // closing
+      return;
+    }
+    statusLedClosingUntil = 0;
+  }
+
+  // Steady closed / night idle: red (dimmer so it is not as harsh as closing)
+  statusLedsFill(80, 0, 0);
+#endif
 }
 
 // Always re-apply: configTime() can reset TZ to UTC on ESP32.
@@ -2268,6 +2369,7 @@ void handleSerialCmd() {
 void setup() {
   // Relays OFF before any other work (no false open on boot).
   relaysInit();
+  statusLedsInit();
   Serial.begin(USB_BAUD);
   delay(1200);
   modemLine.reserve(1024);
@@ -2285,6 +2387,8 @@ void setup() {
                 (unsigned)RELAY_HOLD_PIN, (unsigned)RELAY_PULSE_PIN);
   Serial.printf("MODEM pins: ESP RX=IO%u TX=IO%u (modem TXD->RX, modem RXD<-TX)\n",
                 (unsigned)modemRxPin, (unsigned)modemTxPin);
+  Serial.printf("LED: status DIN=IO%u  GREEN=open/opening  RED=close/closing\n",
+                (unsigned)STATUS_LED_PIN);
   loadCredentialsFromNvs();
   loadWhitelistFromNvs(); // last-known-good survives power loss
 
@@ -2335,6 +2439,7 @@ void loop() {
   readModem();
   serviceSmsModem();
   updateRelay();
+  serviceStatusLeds();
   updateCallLockout();
   recoverIncomingCall();
   serviceHangup();
