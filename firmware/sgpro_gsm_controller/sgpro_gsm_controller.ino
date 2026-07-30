@@ -38,6 +38,9 @@ void updateDayHoldSchedule();
 void startRelayPulse();
 void updateRelay();
 bool sendATWait(const char *cmd, uint32_t waitMs = 3000);
+bool configureModem();
+bool detectModemBaud();
+bool bringUpModem(bool runConfigure);
 String normalizePhoneNumber(const String &raw);
 
 // --- Pins (ESP32-S3 Screw Terminal Board) ---
@@ -55,6 +58,9 @@ String normalizePhoneNumber(const String &raw);
 // Power DTU from 12V (7–36V), NOT from the ESP32 3V3/5V.
 constexpr uint8_t MODEM_RX_PIN = 18;  // ESP32 receives from modem TXD
 constexpr uint8_t MODEM_TX_PIN = 17;  // ESP32 sends to modem RXD
+// Runtime UART pins (detectModemBaud may swap if wiring is reversed).
+uint8_t modemRxPin = MODEM_RX_PIN;
+uint8_t modemTxPin = MODEM_TX_PIN;
 // Two relays (ACTIVE HIGH: GPIO HIGH = coil ON = NO contact closed)
 constexpr uint8_t RELAY_HOLD_PIN = 4;   // day: constant → Roger AP–COM
 constexpr uint8_t RELAY_PULSE_PIN = 5;  // night: 3s pulse → Roger PP–COM
@@ -183,6 +189,9 @@ bool smsCmgsSeen = false;
 uint32_t lastHangupAttemptAt = 0;
 uint8_t hangupAttempts = 0;
 uint32_t activeModemBaud = 0;
+bool modemReady = false;
+uint32_t lastModemRetryAt = 0;
+constexpr uint32_t MODEM_RETRY_MS = 60UL * 1000UL;  // re-probe if cable plugged later
 String temporaryCallerNumber;
 bool callLockout = false;
 uint32_t callLockoutStartedAt = 0;
@@ -673,7 +682,7 @@ const char *safeAtLogLabel(const char *cmd) {
   return !strncmp(cmd, "AT+CGAUTH=", 10) ? "AT+CGAUTH=<redacted>" : cmd;
 }
 
-bool sendATWait(const char *cmd, uint32_t waitMs = 3000) {
+bool sendATWait(const char *cmd, uint32_t waitMs) {
   if (atCommandPending) {
     Serial.printf("AT: %s not sent; command already pending\n", cmd);
     return false;
@@ -714,24 +723,83 @@ void beginModemUart(uint32_t baud) {
   delay(20);
   modemLine = "";
   modemLineCorrupted = false;
-  modem.begin(baud, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+  modem.begin(baud, SERIAL_8N1, modemRxPin, modemTxPin);
   activeModemBaud = baud;
-  Serial.printf("MODEM: probing %lu baud\n", static_cast<unsigned long>(baud));
+  // Drop any stale RX before AT so timeouts are clean.
+  while (modem.available()) (void)modem.read();
+  Serial.printf("MODEM: probing %lu baud  ESP RX=IO%u TX=IO%u\n",
+                static_cast<unsigned long>(baud),
+                (unsigned)modemRxPin, (unsigned)modemTxPin);
+}
+
+// True if modem answered AT with clean OK on current modemRxPin/modemTxPin.
+bool detectModemBaudOnCurrentPins() {
+  static const uint32_t baudRates[] = {115200, 9600, 57600, 38400, 19200};
+  bool sawAnyRx = false;
+  for (uint32_t baud : baudRates) {
+    beginModemUart(baud);
+    if (sendATWait("AT", 1500)) {
+      Serial.printf("MODEM: clean OK detected at %lu baud (RX=IO%u TX=IO%u)\n",
+                    static_cast<unsigned long>(baud),
+                    (unsigned)modemRxPin, (unsigned)modemTxPin);
+      return true;
+    }
+    // sendATWait drains UART into atCommandResponse — use that, not available().
+    if (atCommandResponse.length() > 0 || atCommandCorrupted) {
+      sawAnyRx = true;
+      Serial.printf(
+          "MODEM: RX at %lu baud but not clean OK (len=%u corrupt=%d) RX=IO%u\n",
+          static_cast<unsigned long>(baud),
+          (unsigned)atCommandResponse.length(),
+          (int)atCommandCorrupted,
+          (unsigned)modemRxPin);
+    }
+  }
+  if (!sawAnyRx) {
+    Serial.printf(
+        "MODEM: total silence on ESP RX=IO%u (no bytes any baud this map)\n",
+        (unsigned)modemRxPin);
+  }
+  return false;
+}
+
+// Full detect + optional configure. Used at boot and periodic retry on site.
+bool bringUpModem(bool runConfigure) {
+  if (!detectModemBaud()) {
+    modemReady = false;
+    return false;
+  }
+  modemReady = true;
+  if (runConfigure) {
+    const bool configured = configureModem();
+    Serial.printf("MODEM: initialization %s\n",
+                  configured ? "complete" : "completed with failures");
+  }
+  return true;
 }
 
 bool detectModemBaud() {
-  static const uint32_t baudRates[] = {115200, 9600, 57600, 38400, 19200};
-  for (uint8_t round = 0; round < 3; ++round) {
-    for (uint32_t baud : baudRates) {
-      beginModemUart(baud);
-      if (sendATWait("AT", 1200)) {
-        Serial.printf("MODEM: clean OK detected at %lu baud\n",
-                      static_cast<unsigned long>(baud));
-        return true;
-      }
-    }
+  modemRxPin = MODEM_RX_PIN;
+  modemTxPin = MODEM_TX_PIN;
+  Serial.printf(
+      "MODEM UART expected: modem TXD->ESP IO%u | modem RXD<-ESP IO%u | GND common\n",
+      (unsigned)MODEM_RX_PIN, (unsigned)MODEM_TX_PIN);
+  if (detectModemBaudOnCurrentPins()) return true;
+
+  // Install mistake: data wires swapped. Try once before giving up.
+  Serial.println("MODEM: no OK on default pins — trying TX/RX swap once...");
+  modemRxPin = MODEM_TX_PIN;  // IO17 as RX
+  modemTxPin = MODEM_RX_PIN;  // IO18 as TX
+  if (detectModemBaudOnCurrentPins()) {
+    Serial.println("MODEM: OK on SWAPPED pins — leave wires as-is or hard-wire "
+                   "TXD->IO17 RXD->IO18 and reflash default");
+    return true;
   }
-  Serial.println("MODEM: baud detection failed; no clean ASCII OK");
+
+  modemRxPin = MODEM_RX_PIN;
+  modemTxPin = MODEM_TX_PIN;
+  Serial.println("MODEM: baud detection failed; no clean ASCII OK on either pin map");
+  Serial.println("MODEM: check 12V DTU, common GND, TXD/RXD to IO18/IO17, then RESET ESP");
   return false;
 }
 
@@ -2030,7 +2098,8 @@ void handleSerialCmd() {
         modemHexDiagnostics = false;
         Serial.println("OK modem raw hexadecimal diagnostics OFF");
       } else if (buf == "MODEM_CHECK") {
-        Serial.println("--- MODEM_CHECK start (ESP32 GPIO17=TX→modem RX, GPIO18=RX←modem TX, common GND) ---");
+        Serial.printf("--- MODEM_CHECK start (ESP TX=IO%u RX=IO%u, common GND) ---\n",
+                      (unsigned)modemTxPin, (unsigned)modemRxPin);
         const bool previousHexDiagnostics = modemHexDiagnostics;
         modemHexDiagnostics = true;
         sendATWait("AT");
@@ -2045,12 +2114,20 @@ void handleSerialCmd() {
         sendATWait("AT+CPSI?", 2500);
         modemHexDiagnostics = previousHexDiagnostics;
         Serial.println("--- MODEM_CHECK done ---");
+      } else if (buf == "MODEM_RETRY") {
+        Serial.println("MODEM: manual bring-up...");
+        if (bringUpModem(true)) {
+          Serial.println("OK modem ready");
+        } else {
+          Serial.println("ERR modem still not answering — check cable/GND/TXD-RXD");
+        }
+        lastModemRetryAt = millis();
       } else if (buf == "SYNC") {
         pullWhitelist();
       } else if (buf == "HELP") {
         Serial.println(
             "cmds: PROVISION | WIFI | APN | DAY | NIGHT | HOLD OFF | AUTO | PULSE | "
-            "SYNC | STATUS | RECONNECT | MODEM_CHECK | MODEM_HEX ON/OFF | raw AT…");
+            "SYNC | STATUS | RECONNECT | MODEM_CHECK | MODEM_RETRY | MODEM_HEX ON/OFF | raw AT…");
       } else if (buf == "STATUS") {
         ensureMelbourneTz();
         time_t now = time(nullptr);
@@ -2061,7 +2138,8 @@ void handleSerialCmd() {
             scheduleOverride == ScheduleOverride::ForceNight ? "NIGHT" : "AUTO";
         Serial.printf(
             "unit=%s secret=%s secretVer=%lu wifi=%s apn=%s wl_v=%lld n=%u wifi_up=%d "
-            "pulse=%d hold_ap=%d sched=%s local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u\n",
+            "modem=%d pulse=%d hold_ap=%d sched=%s local=%02d:%02d clock_ok=%d "
+            "pins hold=IO%u pulse=IO%u uart RX=IO%u TX=IO%u\n",
             GATE_LABEL,
             deviceSecret.length() ? "yes" : "NO",
             (unsigned long)secretVersion,
@@ -2070,13 +2148,16 @@ void handleSerialCmd() {
             (long long)localWhitelistVersion,
             (unsigned)callerCount,
             WiFi.status() == WL_CONNECTED,
+            modemReady,
             relayActive,
             dayHoldActive,
             ov,
             t.tm_hour, t.tm_min,
             clockLooksValid(),
             (unsigned)RELAY_HOLD_PIN,
-            (unsigned)RELAY_PULSE_PIN);
+            (unsigned)RELAY_PULSE_PIN,
+            (unsigned)modemRxPin,
+            (unsigned)modemTxPin);
       } else if (buf.length()) {
         if (buf.startsWith("AT") && buf.indexOf('\n') < 0 &&
             buf.indexOf('\r') < 0) {
@@ -2097,7 +2178,9 @@ void setup() {
   delay(1200);
   modemLine.reserve(1024);
   modem.setRxBufferSize(4096);
-  modem.begin(MODEM_BAUD_DEFAULT, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+  modemRxPin = MODEM_RX_PIN;
+  modemTxPin = MODEM_TX_PIN;
+  modem.begin(MODEM_BAUD_DEFAULT, SERIAL_8N1, modemRxPin, modemTxPin);
   activeModemBaud = MODEM_BAUD_DEFAULT;
 
   Serial.println();
@@ -2106,20 +2189,23 @@ void setup() {
   Serial.println("SCHED: 06:00-18:00 HOLD(AP) constant | 18:00-06:00 PULSE(PP) 3s on call");
   Serial.printf("RELAY: HOLD=IO%u→Roger AP  PULSE=IO%u→Roger PP  (both OFF at boot)\n",
                 (unsigned)RELAY_HOLD_PIN, (unsigned)RELAY_PULSE_PIN);
+  Serial.printf("MODEM pins: ESP RX=IO%u TX=IO%u (modem TXD->RX, modem RXD<-TX)\n",
+                (unsigned)modemRxPin, (unsigned)modemTxPin);
   loadCredentialsFromNvs();
   loadWhitelistFromNvs(); // last-known-good survives power loss
 
-  delay(2000);
-  if (detectModemBaud()) {
+    // SIM7600 DTU often needs several seconds after 12V before UART answers.
+  Serial.println("MODEM: waiting 8s for DTU UART ready...");
+  delay(8000);
+  if (bringUpModem(true)) {
     Serial.printf("MODEM: detected at %lu baud\n",
                   static_cast<unsigned long>(activeModemBaud));
-    const bool configured = configureModem();
-    Serial.printf("MODEM: initialization %s\n",
-                  configured ? "complete" : "completed with failures");
     Serial.println("Run MODEM_CHECK for CPIN/CSQ/CREG/CEREG/COPS/CPSI");
   } else {
-    Serial.println("WARN: modem not ready");
+    Serial.println("WARN: modem not ready (normal if cable not fitted yet)");
+    Serial.println("WARN: will retry every 60s, or type MODEM_RETRY after wiring");
   }
+  lastModemRetryAt = millis();
 
   ensureWifi();
   // NTP then force Melbourne TZ (configTime alone leaves UTC on many ESP32 cores)
@@ -2176,6 +2262,15 @@ void loop() {
   if (!callCritical && millis() - lastHeartbeat >= HEARTBEAT_MS) {
     lastHeartbeat = millis();
     if (deviceSecret.length() >= 16) sendHeartbeat();
+  }
+  // Cable fitted after boot (site install): re-probe periodically until OK.
+  if (!modemReady && !callCritical &&
+      millis() - lastModemRetryAt >= MODEM_RETRY_MS) {
+    lastModemRetryAt = millis();
+    Serial.println("MODEM: periodic retry (plug cable / check GND TXD RXD)...");
+    if (bringUpModem(true)) {
+      Serial.println("MODEM: now ready after retry");
+    }
   }
   delay(2);
 }

@@ -1,0 +1,115 @@
+================================================================================
+  THOMASTOWN SITE FLASH + WIRING — Multicom SG-PRO GSM (ESP32-S3)
+  Updated: 2026-07-30 site pack
+================================================================================
+
+SOURCE OF TRUTH (open this folder in Arduino IDE):
+  C:\Users\User\AndroidStudioProjects\RJLMulticomSGPROCLIENTPORTAL\
+    firmware\sgpro_gsm_controller\sgpro_gsm_controller.ino
+
+DESKTOP COPY:
+  C:\Users\User\OneDrive\Desktop\ESP32-FLASH-THOMASTOWN\
+  C:\Users\User\OneDrive\Desktop\sgpro_gsm_controller-DOWNLOAD.zip
+
+Board: ESP32-S3 only (WiFi). Not ESP32-H2.
+
+--------------------------------------------------------------------------------
+A) FLASH BEFORE YOU LEAVE (or on laptop at site)
+--------------------------------------------------------------------------------
+  Arduino IDE:
+    Board:        ESP32S3 Dev Module
+    Upload speed: 921600 (or 460800)
+    Port:         COMx
+    Library:      ArduinoJson (Benoit Blanchon)
+
+  SLIDING gate (default): leave as-is
+    DEVICE_ID = device_commercial_bc_01
+
+  DOUBLE/swing gate: uncomment near top of .ino:
+    #define GATE_UNIT_DOUBLE 1
+    DEVICE_ID = device_commercial_bc_double_01
+
+  Upload → "Done uploading"
+  Serial Monitor 115200, line ending Newline
+
+--------------------------------------------------------------------------------
+B) ON-SITE WIRING (power OFF motor if unsure)
+--------------------------------------------------------------------------------
+  SIM7600 DTU (12V power — NOT ESP 3V3/5V):
+    modem TXD  →  ESP IO18
+    modem RXD  →  ESP IO17
+    modem GND  →  ESP GND
+    DTU 12V    →  site 12V supply
+
+  If AT never answers: swap TXD/RXD only (firmware also auto-tries swap).
+
+  Roger B70/2ML (dry contacts — low voltage command side only):
+    Relay HOLD  IO4 NO/COM  →  Roger AP (16) + COM (17)   day hold open
+    Relay PULSE IO5 NO/COM  →  Roger PP (14) + COM (17)   night 3s open
+    Coil side GND with ESP GND; contacts float dry to Roger.
+
+--------------------------------------------------------------------------------
+C) SERIAL BRING-UP (115200 NL)
+--------------------------------------------------------------------------------
+  After modem cable fitted and DTU 12V on:
+    Wait ~10s after power, or type:  MODEM_RETRY
+  Want to see:
+    MODEM: clean OK detected at 115200 baud ...
+    MODEM: initialization complete (or with failures is OK if voice works)
+
+  Then:
+    WIFI "YourSSID" password
+    PROVISION your-long-secret-min-16-chars
+    SYNC
+    STATUS
+    MODEM_CHECK
+
+  STATUS should show roughly:
+    wifi_up=1  modem=1  wl_v=... n=...  clock_ok=1
+    hold_ap=1 daytime (06:00-18:00 Melbourne) or 0 at night
+
+  Optional cellular data (WiFi is enough for Multicom API):
+    APN "live.vodafone.com" user pass
+
+  Install overrides:
+    DAY | NIGHT | HOLD OFF | PULSE | AUTO | HELP
+
+  Multicom secretHash must be:
+    SHA256( secret + ":" + deviceId )
+
+--------------------------------------------------------------------------------
+D) WHAT IT DOES
+--------------------------------------------------------------------------------
+  Day 06:00–18:00 Melbourne  HOLD ON (AP) — gate held open
+  Night                   whitelist call → hang up → 3s PULSE (PP)
+  Day call                hang up only (already held)
+  Whitelist               Multicom / Firebase (poll ~60s; skip NVS if unchanged)
+  Welcome SMS             cloud jobs via SIM7600
+  No auto-answer          ATS0=0; product uses AT+CHUP
+
+--------------------------------------------------------------------------------
+E) SITE PASS/FAIL
+--------------------------------------------------------------------------------
+  PASS:
+    [ ] Serial READY
+    [ ] MODEM clean OK / MODEM_CHECK AT success
+    [ ] STATUS wifi_up=1 modem=1 clock_ok=1
+    [ ] SYNC whitelist n>0 (or 0 if empty list intentional)
+    [ ] Day: HOLD relay closed on AP
+    [ ] Night or NIGHT then authorised call: 3s PP pulse
+    [ ] Optional: remote gate test from app
+
+  FAIL modem timeouts with cable on:
+    [ ] 12V DTU LED on
+    [ ] GND common
+    [ ] TXD/RXD swap
+    [ ] MODEM_RETRY after fix
+
+--------------------------------------------------------------------------------
+F) IF UPLOAD FAILS
+--------------------------------------------------------------------------------
+  Hold BOOT while Upload, release at "Connecting..."
+  Lower upload speed. Confirm ESP32-S3.
+
+================================================================================
+}
