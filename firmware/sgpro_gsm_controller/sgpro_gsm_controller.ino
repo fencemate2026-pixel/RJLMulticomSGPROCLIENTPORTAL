@@ -29,8 +29,10 @@
 #include <esp_random.h>
 #include <time.h>
 
-// Freenove 8 RGB (WS2812) status bar: GREEN = opening/open, RED = closing/closed
-// Set 0 if no LED module fitted (saves library dependency when disabled).
+// Freenove 8 RGB (WS2812) status bar — built in; hardware optional.
+// GREEN = open/opening, RED = close/closing. DIN→IO8, VCC→5V, GND→GND.
+// Compile-time off: #define STATUS_LED_ENABLE 0  (no Adafruit NeoPixel needed)
+// Runtime off (no reflash): Serial  LED OFF   |  LED ON  |  LED TEST
 #ifndef STATUS_LED_ENABLE
 #define STATUS_LED_ENABLE 1
 #endif
@@ -176,6 +178,7 @@ bool dayHoldActive = false;     // ESP constant-ON day hold (06:00–18:00 local
 bool statusLedWasOpen = false;
 uint32_t statusLedClosingUntil = 0;
 uint32_t lastStatusLedTick = 0;
+bool statusLedsUserEnabled = true;  // NVS "ledOn"; Serial LED ON/OFF
 #if STATUS_LED_ENABLE
 Adafruit_NeoPixel statusLeds(STATUS_LED_COUNT, STATUS_LED_PIN, NEO_GRB + NEO_KHZ800);
 #endif
@@ -319,6 +322,7 @@ void relaysInit() {
 }
 
 // ── Status LEDs (Freenove 8× WS2812): GREEN open/opening, RED close/closing ──
+// Built into firmware. Module optional — leave unplugged if unused.
 // Gate "open command" = day HOLD (AP) or night PULSE (PP). Not motor limit switches.
 void statusLedsInit() {
 #if STATUS_LED_ENABLE
@@ -327,10 +331,11 @@ void statusLedsInit() {
   statusLeds.clear();
   statusLeds.show();
   Serial.printf(
-      "LED: Freenove 8 RGB on IO%u — GREEN=open/opening RED=close/closing\n",
-      (unsigned)STATUS_LED_PIN);
+      "LED: built-in status IO%u — GREEN=open RED=close | user=%s | LED ON/OFF/TEST\n",
+      (unsigned)STATUS_LED_PIN,
+      statusLedsUserEnabled ? "ON" : "OFF");
 #else
-  Serial.println("LED: status bar disabled (STATUS_LED_ENABLE=0)");
+  Serial.println("LED: compiled out (STATUS_LED_ENABLE=0)");
 #endif
 }
 
@@ -346,10 +351,23 @@ static void statusLedsFill(uint8_t r, uint8_t g, uint8_t b) {
 #endif
 }
 
+static void statusLedsBlank() {
+#if STATUS_LED_ENABLE
+  statusLeds.clear();
+  statusLeds.show();
+#endif
+}
+
 void serviceStatusLeds() {
 #if STATUS_LED_ENABLE
   if (millis() - lastStatusLedTick < STATUS_LED_TICK_MS) return;
   lastStatusLedTick = millis();
+
+  // User (or NVS) turned bar off — stay dark; gate logic unchanged
+  if (!statusLedsUserEnabled) {
+    statusLedsBlank();
+    return;
+  }
 
   // Commanded open: day hold or night open pulse
   const bool openCmd = dayHoldActive || relayActive;
@@ -359,13 +377,10 @@ void serviceStatusLeds() {
   if (openCmd) {
     statusLedWasOpen = true;
     statusLedClosingUntil = 0;
-    // Opening pulse = brighter green chase feel via full green; held open = solid green
     if (relayActive && !dayHoldActive) {
-      // Night opening pulse: solid green
-      statusLedsFill(0, 255, 0);
+      statusLedsFill(0, 255, 0);  // opening pulse
     } else {
-      // Day hold open: solid green
-      statusLedsFill(0, 200, 0);
+      statusLedsFill(0, 200, 0);  // day hold open
     }
     return;
   }
@@ -386,7 +401,7 @@ void serviceStatusLeds() {
     statusLedClosingUntil = 0;
   }
 
-  // Steady closed / night idle: red (dimmer so it is not as harsh as closing)
+  // Steady closed / night idle: dim red
   statusLedsFill(80, 0, 0);
 #endif
 }
@@ -576,6 +591,14 @@ void loadCredentialsFromNvs() {
   cellularPass = prefs.getString("apnPass", "");
   localWhitelistVersion = prefs.getLong64("wl_ver", -1);
   localWhitelistChecksum = prefs.getString("wl_cksum", "");
+  statusLedsUserEnabled = prefs.getBool("ledOn", true);
+  prefs.end();
+}
+
+void saveStatusLedEnabled(bool on) {
+  statusLedsUserEnabled = on;
+  prefs.begin("sgpro", false);
+  prefs.putBool("ledOn", on);
   prefs.end();
 }
 
@@ -2317,9 +2340,34 @@ void handleSerialCmd() {
         lastModemRetryAt = millis();
       } else if (buf == "SYNC") {
         pullWhitelist();
+      } else if (buf == "LED ON") {
+        saveStatusLedEnabled(true);
+        Serial.println("OK LED status bar ON (saved) — GREEN=open RED=close");
+      } else if (buf == "LED OFF") {
+        saveStatusLedEnabled(false);
+        statusLedsBlank();
+        Serial.println("OK LED status bar OFF (saved) — gate logic unchanged");
+      } else if (buf == "LED TEST") {
+#if STATUS_LED_ENABLE
+        Serial.println("LED TEST: green 1s → red 1s → restore");
+        statusLedsUserEnabled = true;
+        statusLedsFill(0, 255, 0);
+        delay(1000);
+        statusLedsFill(255, 0, 0);
+        delay(1000);
+        statusLedsBlank();
+        // restore user preference from NVS
+        prefs.begin("sgpro", true);
+        statusLedsUserEnabled = prefs.getBool("ledOn", true);
+        prefs.end();
+        Serial.printf("LED TEST done; user=%s\n", statusLedsUserEnabled ? "ON" : "OFF");
+#else
+        Serial.println("ERR LED compiled out (STATUS_LED_ENABLE=0)");
+#endif
       } else if (buf == "HELP") {
         Serial.println(
             "cmds: PROVISION | WIFI | APN | DAY | NIGHT | HOLD OFF | AUTO | PULSE | "
+            "LED ON | LED OFF | LED TEST | "
             "SYNC | STATUS | RECONNECT | MODEM_CHECK | MODEM_RETRY | MODEM_HEX ON/OFF | raw AT…");
       } else if (buf == "STATUS") {
         ensureMelbourneTz();
@@ -2331,7 +2379,7 @@ void handleSerialCmd() {
             scheduleOverride == ScheduleOverride::ForceNight ? "NIGHT" : "AUTO";
         Serial.printf(
             "unit=%s secret=%s secretVer=%lu wifi=%s apn=%s wl_v=%lld n=%u wifi_up=%d "
-            "modem=%d pulse=%d hold_ap=%d hold_cut=%u pulse_cut=%u sched=%s "
+            "modem=%d pulse=%d hold_ap=%d hold_cut=%u pulse_cut=%u led=%d sched=%s "
             "local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u uart RX=IO%u TX=IO%u\n",
             GATE_LABEL,
             deviceSecret.length() ? "yes" : "NO",
@@ -2346,6 +2394,7 @@ void handleSerialCmd() {
             dayHoldActive,
             (unsigned)postHoldCutStrikesLeft,
             (unsigned)postPulseCutStrikesLeft,
+            statusLedsUserEnabled,
             ov,
             t.tm_hour, t.tm_min,
             clockLooksValid(),
