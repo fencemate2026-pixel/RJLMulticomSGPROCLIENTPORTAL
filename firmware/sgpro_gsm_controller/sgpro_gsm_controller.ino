@@ -1,18 +1,21 @@
-﻿/**
- * RJL Multicom SG-PRO Ã¢â‚¬â€ Production controller
+/**
+ * RJL Multicom SG-PRO — Production controller
  * ESP32-S3 + Waveshare SIM7600G-H 4G DTU
  *
- * FINAL BEHAVIOUR
- * Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
- * Portal add/delete Ã¢â€ â€™ Firebase whitelistVersion++
- * ESP32 polls ~60s Ã¢â€ â€™ validate temp Ã¢â€ â€™ atomic activate local list
- * Incoming call Ã¢â€ â€™ local list only Ã¢â€ â€™ AT+CHUP Ã¢â€ â€™ 3s relay if authorised
- * Welcome SMS Ã¢â€ â€™ gsmSmsQueue jobs PENDINGÃ¢â€ â€™SENDINGÃ¢â€ â€™SENT|FAILED, ack by jobId
+ * SCHEDULE (local Melbourne time, NTP) — TWO RELAYS into Roger B70/2ML:
+ *   06:00 → 18:00  DAY  — HOLD relay (IO4) constant ON → AP–COM
+ *   18:00 → 06:00  NIGHT — PULSE relay (IO5) 3s on whitelist call → PP–COM
  *
- * Secrets: provision once via Serial "PROVISION <secret>" Ã¢â€ â€™ Preferences NVS
- * Never commit live DEVICE_SECRET to git.
+ * Portal add/delete → Firebase whitelistVersion++
+ * ESP32 polls ~60s → validate temp → atomic activate local list
+ * Night call → local list only → AT+CHUP → 3s relay if authorised
+ * Day call → hang-up only (gate already held); no extra pulse
+ * Welcome SMS → gsmSmsQueue jobs PENDING→SENDING→SENT|FAILED
  *
- * Libraries: ArduinoJson, Preferences, WiFi, HTTPClient, mbedTLS (built-in ESP32)
+ * TWO UNITS: set GATE_UNIT below before flash (sliding vs double).
+ * Secrets: Serial "PROVISION <secret>" → NVS. Never commit DEVICE_SECRET.
+ *
+ * Libraries: ArduinoJson, Preferences, WiFi, HTTPClient, mbedTLS
  */
 
 #include <Arduino.h>
@@ -25,22 +28,37 @@
 #include <esp_random.h>
 #include <time.h>
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Pins (ESP32-S3 Screw Terminal Board) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-// Silkscreen usually says IO17 / IO18 / IO5 (or G17 / G18 / G5) Ã¢â‚¬â€ not "GPIO18".
+// Explicit prototypes (do not rely on Arduino auto-prototype ordering).
+void resetIncomingCallState();
+void hangUpCall();
+void setRelaysSafeOff();
+void ensureMelbourneTz();
+void syncNtpClock();
+void updateDayHoldSchedule();
+void startRelayPulse();
+void updateRelay();
+bool sendATWait(const char *cmd, uint32_t waitMs = 3000);
+String normalizePhoneNumber(const String &raw);
+
+// --- Pins (ESP32-S3 Screw Terminal Board) ---
+// Silkscreen usually says IO17 / IO18 / IO5 (or G17 / G18 / G5) — not "GPIO18".
 //
-//   SIM7600G-H DTU TXD  Ã¢â€ â€™  board IO18  (ESP32 RX  = MODEM_RX_PIN)
-//   SIM7600G-H DTU RXD  Ã¢â€ â€™  board IO17  (ESP32 TX  = MODEM_TX_PIN)
-//   SIM7600G-H DTU GND  Ã¢â€ â€™  board GND
-//   Relay IN            Ã¢â€ â€™  board IO5
-//   Relay GND           Ã¢â€ â€™  board GND
+//   SIM7600G-H DTU TXD  →  board IO18  (ESP32 RX  = MODEM_RX_PIN)
+//   SIM7600G-H DTU RXD  →  board IO17  (ESP32 TX  = MODEM_TX_PIN)
+//   SIM7600G-H DTU GND  →  board GND
 //
-// Power DTU from 12V (7Ã¢â‚¬â€œ36V), NOT from the ESP32 3V3/5V.
-// If your terminal strip has no IO17/IO18, pick two free UARTable IOs
-// (e.g. IO15/IO16) and change the three numbers below to match the labels.
+// TWO dry-contact relays into Roger B70/2ML (low-voltage command terminals):
+//   Relay HOLD  (IO4) NO/COM  →  Roger 16 (AP) and 17 (COM)   day hold open
+//   Relay PULSE (IO5) NO/COM  →  Roger 14 (PP) and 17 (COM)   night 3s step/open
+//   Relay GND common with ESP GND (coil side only — contacts float dry to motor)
+//
+// Power DTU from 12V (7–36V), NOT from the ESP32 3V3/5V.
 constexpr uint8_t MODEM_RX_PIN = 18;  // ESP32 receives from modem TXD
 constexpr uint8_t MODEM_TX_PIN = 17;  // ESP32 sends to modem RXD
-constexpr uint8_t RELAY_PIN = 5;
-constexpr bool RELAY_ACTIVE_LOW = false;
+// Two relays (ACTIVE HIGH: GPIO HIGH = coil ON = NO contact closed)
+constexpr uint8_t RELAY_HOLD_PIN = 4;   // day: constant → Roger AP–COM
+constexpr uint8_t RELAY_PULSE_PIN = 5;  // night: 3s pulse → Roger PP–COM
+constexpr bool RELAY_ACTIVE_HIGH = true;
 
 constexpr uint32_t USB_BAUD = 115200;
 constexpr uint32_t MODEM_BAUD_DEFAULT = 115200;
@@ -56,14 +74,33 @@ constexpr uint32_t HEARTBEAT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t SMS_COOLDOWN_MS = 10000;
 constexpr uint32_t SMS_COMMAND_TIMEOUT_MS = 5000;
 constexpr uint32_t SMS_SUBMIT_TIMEOUT_MS = 30000;
+constexpr uint32_t SCHEDULE_TICK_MS = 1000UL;
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Non-secret firmware config only (safe in source control) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-// Deployed on project iiii-7b9e8 (Blaze) Ã¢â‚¬â€ Cloud Run URL for gen2 function.
+// Day hold window (local Australia/Melbourne): 06:00 inclusive → 18:00 exclusive
+constexpr int HOLD_OPEN_HOUR = 6;
+constexpr int HOLD_OPEN_MIN = 0;
+constexpr int HOLD_CLOSE_HOUR = 18;
+constexpr int HOLD_CLOSE_MIN = 0;
+
+// ── Dual gate units (flash each board with the matching define) ─────────────
+// Sliding (default): leave GATE_UNIT_DOUBLE undefined.
+// Double/swing:      add -DGATE_UNIT_DOUBLE=1 in Arduino build flags, or
+//                    uncomment the next line before upload to the double-gate ESP.
+// #define GATE_UNIT_DOUBLE 1
+
+// Non-secret firmware config only (safe in source control)
+// Deployed on project iiii-7b9e8 (Blaze) — Cloud Run URL for gen2 function.
 // Classic: https://australia-southeast1-iiii-7b9e8.cloudfunctions.net/gsmDeviceApi
 // See docs/ALTERNATE_PROJECT_DEPLOY.md
 const char *API_BASE =
     "https://gsmdeviceapi-2vin7lgmjq-ts.a.run.app";
-const char *DEVICE_ID = "device_commercial_bc_01";
+#if defined(GATE_UNIT_DOUBLE)
+const char *DEVICE_ID = "device_commercial_bc_double_01";
+const char *GATE_LABEL = "DOUBLE/SWING";
+#else
+const char *DEVICE_ID = "device_commercial_bc_01";  // sliding (Settlement Rd live id)
+const char *GATE_LABEL = "SLIDING";
+#endif
 
 static const char GTS_ROOT_R1[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
@@ -98,15 +135,17 @@ Z6tGn6D/Qqc6f1zLXbBwHSs09dR2CQzreExZBfMzQsNhFRAbd03OIozUhfJFfbdT
 bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c
 -----END CERTIFICATE-----
 )EOF";
-// Wi-Fi SSID/password and DEVICE_SECRET are NEVER committed Ã¢â‚¬â€ provision via Serial.
+// Wi-Fi SSID/password and DEVICE_SECRET are NEVER committed -- provision via Serial.
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Runtime Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Runtime ----------------------------------------
 HardwareSerial modem(1);
 Preferences prefs;
 String modemLine;
 
-bool relayActive = false;
+bool relayActive = false;       // short night pulse in progress
 uint32_t relayOffAt = 0;
+bool dayHoldActive = false;     // ESP constant-ON day hold (06:00–18:00 local)
+uint32_t lastScheduleTick = 0;
 bool ringPending = false;
 bool firstRingObserved = false;
 uint32_t ringStartedAt = 0;
@@ -176,6 +215,14 @@ GnssFix lastGnssFix;
 String deviceSecret; // NVS only
 String wifiSsid;     // NVS only
 String wifiPass;     // NVS only
+// Cellular data (optional — gate open works without PDP if Wi‑Fi carries API)
+String cellularApn;   // NVS: e.g. live.vodafone.com — never commit user/pass
+String cellularUser;  // NVS optional PDP user
+String cellularPass;  // NVS optional PDP password
+
+// Install / debug: override day-hold schedule until AUTO
+enum class ScheduleOverride : uint8_t { Auto = 0, ForceDay = 1, ForceNight = 2 };
+ScheduleOverride scheduleOverride = ScheduleOverride::Auto;
 
 constexpr size_t MAX_CALLERS = 120;
 struct CallerEntry {
@@ -188,36 +235,158 @@ struct CallerEntry {
 CallerEntry callers[MAX_CALLERS];
 size_t callerCount = 0;
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Relay Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-// GPIO 5 is authoritative ACTIVE HIGH: HIGH energises, LOW is always safe/off.
-// Keep all physical relay writes here (except setup's mandatory LOW writes).
-void setRelay(bool on) {
-  digitalWrite(RELAY_PIN, on ? HIGH : LOW);
+// ── Two relays (Roger B70/2ML) ───────────────────────────────────────────────
+// HOLD  IO4 → AP–COM  day constant closed contact (blocks auto-reclose)
+// PULSE IO5 → PP–COM  night 3s closed contact (step/open pulse)
+// Both ACTIVE HIGH unless RELAY_ACTIVE_HIGH is false.
+
+static inline void writeRelayPin(uint8_t pin, bool on) {
+#if RELAY_ACTIVE_HIGH
+  digitalWrite(pin, on ? HIGH : LOW);
+#else
+  digitalWrite(pin, on ? LOW : HIGH);
+#endif
 }
-void startRelayPulse() {
-  if (relayActive) return; // one pulse per call window
-  relayActive = true;
-  relayOffAt = millis() + RELAY_PULSE_MS;
-  setRelay(true);
-  Serial.println("RELAY: ON GPIO5=HIGH pulse=3000ms");
+
+void setHoldRelay(bool on) {
+  writeRelayPin(RELAY_HOLD_PIN, on);
 }
-void updateRelay() {
-  if (relayActive && (int32_t)(millis() - relayOffAt) >= 0) {
+
+void setPulseRelay(bool on) {
+  writeRelayPin(RELAY_PULSE_PIN, on);
+}
+
+// Force BOTH relays safe/off (boot / emergency only). Does not take on=true.
+void setRelaysSafeOff() {
+  setHoldRelay(false);
+  setPulseRelay(false);
+  dayHoldActive = false;
+  relayActive = false;
+}
+
+void relaysInit() {
+  pinMode(RELAY_HOLD_PIN, OUTPUT);
+  pinMode(RELAY_PULSE_PIN, OUTPUT);
+  setHoldRelay(false);
+  setPulseRelay(false);
+}
+
+// Always re-apply: configTime() can reset TZ to UTC on ESP32.
+void ensureMelbourneTz() {
+  // AEST UTC+10 / AEDT UTC+11 (first Sunday Oct → first Sunday Apr)
+  setenv("TZ", "AEST-10AEDT,M10.1.0,M4.1.0/3", 1);
+  tzset();
+}
+
+// NTP then Melbourne local — call this instead of bare configTime().
+void syncNtpClock() {
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  ensureMelbourneTz();
+}
+
+bool clockLooksValid() {
+  return time(nullptr) > 1700000000L;  // after ~2023-11
+}
+
+// True during 06:00–18:00 local Melbourne. If clock invalid → night-safe (dial only).
+bool isDayHoldWindow() {
+  ensureMelbourneTz();
+  if (!clockLooksValid()) return false;
+  time_t now = time(nullptr);
+  struct tm t;
+  localtime_r(&now, &t);
+  const int mins = t.tm_hour * 60 + t.tm_min;
+  const int openM = HOLD_OPEN_HOUR * 60 + HOLD_OPEN_MIN;
+  const int closeM = HOLD_CLOSE_HOUR * 60 + HOLD_CLOSE_MIN;
+  return mins >= openM && mins < closeM;
+}
+
+void applyDayHold(bool want) {
+  if (want == dayHoldActive) {
+    if (want) setHoldRelay(true);  // re-assert hold contact
+    return;
+  }
+  dayHoldActive = want;
+  if (dayHoldActive) {
+    // End any night pulse; assert AP hold only
     relayActive = false;
-    setRelay(false);
-    Serial.println("RELAY: OFF GPIO5=LOW");
+    setPulseRelay(false);
+    setHoldRelay(true);
+    Serial.println("SCHED: DAY — HOLD relay ON (AP–COM constant)");
+  } else {
+    setHoldRelay(false);
+    relayActive = false;
+    setPulseRelay(false);
+    Serial.println("SCHED: NIGHT — HOLD off; dial uses PULSE relay (PP–COM 3s)");
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ NVS secrets + whitelist Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+void updateDayHoldSchedule() {
+  if (scheduleOverride == ScheduleOverride::ForceDay) {
+    applyDayHold(true);
+    return;
+  }
+  if (scheduleOverride == ScheduleOverride::ForceNight) {
+    applyDayHold(false);
+    return;
+  }
+  applyDayHold(isDayHoldWindow());
+}
+
+void startRelayPulse() {
+  if (dayHoldActive) {
+    // Day: AP already held — do not pulse PP (not needed; avoid extra cycles)
+    setHoldRelay(true);
+    Serial.println("RELAY: day hold active — skip PP pulse");
+    return;
+  }
+  if (relayActive) return;  // one pulse per call window
+  relayActive = true;
+  relayOffAt = millis() + RELAY_PULSE_MS;
+  setPulseRelay(true);
+  Serial.printf("RELAY: PULSE ON IO%u  %lums (PP–COM)\n",
+                (unsigned)RELAY_PULSE_PIN, (unsigned long)RELAY_PULSE_MS);
+}
+
+void updateRelay() {
+  // Day hold path: keep AP contact closed; pulse channel stays off
+  if (dayHoldActive) {
+    setHoldRelay(true);
+    if (!relayActive) setPulseRelay(false);
+    return;
+  }
+  // Night pulse path
+  if (relayActive && (int32_t)(millis() - relayOffAt) >= 0) {
+    relayActive = false;
+    setPulseRelay(false);
+    Serial.println("RELAY: PULSE OFF (PP–COM open)");
+  }
+}
+
+// -- NVS secrets + whitelist ----------------------------------------
 void loadCredentialsFromNvs() {
   prefs.begin("sgpro", true);
   deviceSecret = prefs.getString("secret", "");
   secretVersion = prefs.getUInt("secretVer", 1);
   wifiSsid = prefs.getString("wifiSsid", "");
   wifiPass = prefs.getString("wifiPass", "");
+  cellularApn = prefs.getString("apn", "");
+  cellularUser = prefs.getString("apnUser", "");
+  cellularPass = prefs.getString("apnPass", "");
   localWhitelistVersion = prefs.getLong64("wl_ver", -1);
   prefs.end();
+}
+
+bool saveApnToNvs(const String &apn, const String &user, const String &pass) {
+  prefs.begin("sgpro", false);
+  prefs.putString("apn", apn);
+  prefs.putString("apnUser", user);
+  prefs.putString("apnPass", pass);
+  prefs.end();
+  cellularApn = apn;
+  cellularUser = user;
+  cellularPass = pass;
+  return true;
 }
 
 bool saveSecretToNvs(const String &secret, uint32_t version = 1) {
@@ -255,11 +424,26 @@ bool writeWhitelistSlot(
   bool ok = prefs.putUInt("count", (uint32_t)count) == sizeof(uint32_t);
   for (size_t i = 0; i < count && ok; i++) {
     String k = "c" + String(i);
+    // Every field must succeed; otherwise keep last-known-good (do not mark valid).
     ok = prefs.putString((k + "p").c_str(), entries[i].e164) > 0;
-    prefs.putString((k + "i").c_str(), entries[i].id);
-    prefs.putString((k + "n").c_str(), entries[i].name);
-    prefs.putBool((k + "e").c_str(), entries[i].enabled);
-    prefs.putLong64((k + "u").c_str(), entries[i].validUntilEpoch);
+    // id/name may be empty; putString returns 0 for empty string — treat empty as OK
+    if (ok) {
+      const size_t idLen = strlen(entries[i].id);
+      const size_t wroteId = prefs.putString((k + "i").c_str(), entries[i].id);
+      ok = (idLen == 0) ? true : (wroteId > 0);
+    }
+    if (ok) {
+      const size_t nameLen = strlen(entries[i].name);
+      const size_t wroteName = prefs.putString((k + "n").c_str(), entries[i].name);
+      ok = (nameLen == 0) ? true : (wroteName > 0);
+    }
+    if (ok) {
+      // Preferences::putBool returns size written; require success
+      ok = prefs.putBool((k + "e").c_str(), entries[i].enabled) > 0;
+    }
+    if (ok) {
+      ok = prefs.putLong64((k + "u").c_str(), entries[i].validUntilEpoch) == sizeof(int64_t);
+    }
   }
   ok = ok && prefs.putLong64("ver", version) == sizeof(int64_t);
   if (ok) prefs.putBool("valid", true);
@@ -404,7 +588,7 @@ bool loadWhitelistFromNvs() {
   return loadLegacyWhitelistFromNvs();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Modem Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Modem ----------------------------------------
 void processModemLine(const String &rawLine, bool framingCorrupted = false);
 
 void writeModem(const uint8_t *data, size_t length) {
@@ -514,7 +698,9 @@ bool sendATWait(const char *cmd, uint32_t waitMs = 3000) {
 }
 
 void beginModemUart(uint32_t baud) {
-  setRelay(false);
+  // Do not kill day-hold AP contact while probing UART; only clear pulse channel.
+  setPulseRelay(false);
+  relayActive = false;
   modem.end();
   delay(20);
   modemLine = "";
@@ -541,35 +727,44 @@ bool detectModemBaud() {
 }
 
 bool configureModem() {
-  static const char *const commands[] = {
+  // Voice path first: never auto-answer (product hangs up via AT+CHUP).
+  static const char *const baseCommands[] = {
       "ATE0",
       "AT+CMEE=2",
       "AT+CPIN?",
       "AT+CFUN=1",
+      "ATS0=0",
       "AT+CLIP=1",
       "AT+CSQ",
       "AT+CREG?",
       "AT+CEREG?",
-      "AT+CGDCONT=1,\"IP\",\"live.vodafone.com\"",
-      "AT+CGAUTH=1,1,\"wa9acpnyjrbg\",\"wa9acpnyjrbg\"",
-      "AT+CGATT=1",
-      "AT+CGACT=1,1",
-      "AT+CGPADDR=1",
-      "AT+NETOPEN",
   };
   bool allOk = true;
-  for (const char *command : commands) {
-    const uint32_t timeoutMs =
-        (!strcmp(command, "AT+CGATT=1") || !strcmp(command, "AT+CGACT=1,1") ||
-         !strcmp(command, "AT+NETOPEN"))
-            ? 30000
-            : 5000;
-    if (!sendATWait(command, timeoutMs)) allOk = false;
+  for (const char *command : baseCommands) {
+    if (!sendATWait(command, 5000)) allOk = false;
   }
-  // Preserve the production SMS feature after the required data sequence.
+
+  // Optional cellular data (API usually goes over Wi‑Fi). APN from NVS only —
+  // never hardcode carrier user/password in source.
+  if (cellularApn.length() > 0) {
+    String cgdcont = "AT+CGDCONT=1,\"IP\",\"" + cellularApn + "\"";
+    if (!sendATWait(cgdcont.c_str(), 5000)) allOk = false;
+    if (cellularUser.length() > 0) {
+      // PAP auth type 1 — credentials redacted in sendAT logs
+      String cgauth = "AT+CGAUTH=1,1,\"" + cellularUser + "\",\"" + cellularPass + "\"";
+      if (!sendATWait(cgauth.c_str(), 5000)) allOk = false;
+    }
+    if (!sendATWait("AT+CGATT=1", 30000)) allOk = false;
+    if (!sendATWait("AT+CGACT=1,1", 30000)) allOk = false;
+    if (!sendATWait("AT+CGPADDR=1", 5000)) allOk = false;
+    if (!sendATWait("AT+NETOPEN", 30000)) allOk = false;
+  } else {
+    Serial.println("MODEM: no APN in NVS — skip PDP (Serial: APN \"name\" [user] [pass])");
+  }
+
+  // SMS + GNSS (voice/gate still work if these fail)
   if (!sendATWait("AT+CMGF=1", 5000)) allOk = false;
   if (!sendATWait("AT+CSCS=\"GSM\"", 5000)) allOk = false;
-  // GNSS may already be enabled; failure here must not disable gate/call use.
   sendATWait("AT+CGPS=1", 5000);
   return allOk;
 }
@@ -682,7 +877,7 @@ void queryLiveModemTelemetry() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Phone Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Phone ----------------------------------------
 String normalizePhoneNumber(const String &raw) {
   String cleaned;
   for (size_t i = 0; i < raw.length(); i++) {
@@ -691,12 +886,33 @@ String normalizePhoneNumber(const String &raw) {
     else if (c == '+' && cleaned.length() == 0) cleaned += c;
   }
   if (cleaned.isEmpty()) return "";
-  if (cleaned.startsWith("+")) return cleaned;
-  if (cleaned.startsWith("00")) return "+" + cleaned.substring(2);
-  if (cleaned.startsWith("0")) return "+61" + cleaned.substring(1);
-  if (cleaned.startsWith("61")) return "+" + cleaned;
-  if (cleaned.startsWith("4") && cleaned.length() == 9) return "+61" + cleaned;
-  return cleaned;
+
+  // Already E.164: + then 8–15 digits (ITU max 15 national digits)
+  if (cleaned.startsWith("+")) {
+    const size_t digits = cleaned.length() - 1;
+    if (digits < 8 || digits > 15) return "";
+    return cleaned;
+  }
+  // International prefix 00…
+  if (cleaned.startsWith("00")) {
+    if (cleaned.length() < 10 || cleaned.length() > 17) return "";
+    return "+" + cleaned.substring(2);
+  }
+  // AU national trunk: 0 + 9-digit NSN (e.g. 04xx xxx xxx)
+  if (cleaned.startsWith("0") && cleaned.length() == 10) {
+    return "+61" + cleaned.substring(1);
+  }
+  // AU mobile without trunk or country: 4xxxxxxxx (9 digits)
+  if (cleaned.startsWith("4") && cleaned.length() == 9) {
+    return "+61" + cleaned;
+  }
+  // Country code without + : only if length looks like a full AU number
+  // (61 + 9-digit NSN = 11; allow up to 13 for other 61-area lengths)
+  if (cleaned.startsWith("61") && cleaned.length() >= 11 && cleaned.length() <= 13) {
+    return "+" + cleaned;
+  }
+  // Never return bare non-E.164 digits (call path / SMS require leading +).
+  return "";
 }
 
 String extractCallerNumber(const String &clipLine) {
@@ -746,7 +962,7 @@ int64_t parseIsoUtcEpoch(const char *iso) {
   if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &year, &month, &day,
              &hour, &minute, &second) != 6) return -1;
   if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 ||
-      hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60)
+      hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59)
     return -1;
   // Gregorian UTC date to Unix epoch; avoids timezone-dependent mktime().
   year -= month <= 2;
@@ -759,7 +975,7 @@ int64_t parseIsoUtcEpoch(const char *iso) {
   return days * 86400LL + hour * 3600LL + minute * 60LL + second;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ SMS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- SMS ----------------------------------------
 // Returns true only after +CMGS: <n> and OK
 bool isValidAustralianMobile(const String &number) {
   if (number.length() != 12 || !number.startsWith("+614")) return false;
@@ -877,7 +1093,7 @@ void serviceSmsModem() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Auth + HTTP Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Auth + HTTP ----------------------------------------
 String randomNonceHex(size_t bytes = 12) {
   String s;
   for (size_t i = 0; i < bytes; i++) {
@@ -928,23 +1144,25 @@ bool httpSigned(
     String &responseOut
 ) {
   if (deviceSecret.length() < 16) {
-    Serial.println("HTTP: no device secret in NVS Ã¢â‚¬â€ run PROVISION");
+    Serial.println("HTTP: no device secret in NVS -- run PROVISION");
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) return false;
 
   time_t now = time(nullptr);
   if (now < 1700000000) {
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
-    const uint32_t timeDeadline = millis() + 10000UL;
+    syncNtpClock();
+    // Unsigned elapsed: safe across millis() wrap (period << 49 days).
+    const uint32_t started = millis();
     do {
       delay(100);
       now = time(nullptr);
-    } while (now < 1700000000 && (int32_t)(millis() - timeDeadline) < 0);
+    } while (now < 1700000000 && (millis() - started) < 10000UL);
     if (now < 1700000000) {
       Serial.println("HTTP: clock not synchronized; request not signed");
       return false;
     }
+    ensureMelbourneTz();
   }
   String ts = String((uint64_t)now * 1000ULL);
   String nonce = randomNonceHex();
@@ -972,7 +1190,7 @@ bool httpSigned(
   int code = (strcmp(method, "GET") == 0) ? http.GET() : http.POST(body);
   responseOut = http.getString();
   http.end();
-  Serial.printf("HTTP %s %s Ã¢â€ â€™ %d\n", method, path.c_str(), code);
+  Serial.printf("HTTP %s %s -> %d\n", method, path.c_str(), code);
   if (code < 200 || code >= 300) {
     String diagnostic = responseOut;
     if (diagnostic.length() > 512) diagnostic = diagnostic.substring(0, 512) + "...";
@@ -1001,7 +1219,7 @@ void ensureWifi() {
     return;
   }
   if (wifiSsid.length() < 1) {
-    Serial.println("WiFi: not provisioned Ã¢â‚¬â€ Serial: WIFI \"ssid\" password");
+    Serial.println("WiFi: not provisioned -- Serial: WIFI \"ssid\" password");
     return;
   }
   // Cooldown: do not start another begin() while one is in flight
@@ -1020,7 +1238,7 @@ void ensureWifi() {
   Serial.printf("WiFi: connecting to \"%s\" ...\n", wifiSsid.c_str());
   wl_status_t beginSt = WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
   if (beginSt == WL_CONNECT_FAILED) {
-    Serial.println("WiFi: begin rejected Ã¢â‚¬â€ will retry later");
+    Serial.println("WiFi: begin rejected -- will retry later");
     wifiBusy = false;
     return;
   }
@@ -1030,7 +1248,7 @@ void ensureWifi() {
     if (st == WL_CONNECTED) {
       Serial.printf("WiFi: CONNECTED  ip=%s  rssi=%d dBm\n",
                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
-      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      syncNtpClock();
       wifiBusy = false;
       return;
     }
@@ -1053,7 +1271,7 @@ void ensureWifi() {
   wifiBusy = false;
 }
 
-/** Force reconnect now (Serial: RECONNECT) Ã¢â‚¬â€ ignores cooldown. */
+/** Force reconnect now (Serial: RECONNECT) -- ignores cooldown. */
 void forceWifiReconnect() {
   wifiLastAttemptMs = 0;
   wifiBusy = false;
@@ -1064,34 +1282,34 @@ void forceWifiReconnect() {
   ensureWifi();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Whitelist pull: last-known-good until fully validated Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Whitelist pull: last-known-good until fully validated -----------------
 // Do NOT replace working list until: authenticated (HTTP ok) + full download
 // + parse success + validated + save success. Failed/empty body keeps LKG.
 bool pullWhitelist() {
   ensureWifi();
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Whitelist: offline Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: offline -- keeping last-known-good");
     return false;
   }
 
   String path = String("/gsm/device/") + DEVICE_ID + "/whitelist";
   String resp;
   if (!httpSigned("GET", path, "", resp)) {
-    Serial.println("Whitelist: download failed Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: download failed -- keeping last-known-good");
     return false;
   }
   if (resp.length() < 8) {
-    Serial.println("Whitelist: empty response Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: empty response -- keeping last-known-good");
     return false;
   }
 
   JsonDocument doc;
   if (deserializeJson(doc, resp)) {
-    Serial.println("Whitelist: parse failed Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: parse failed -- keeping last-known-good");
     return false;
   }
   if (!doc["version"].is<int64_t>() || !doc["callers"].is<JsonArray>()) {
-    Serial.println("Whitelist: invalid shape Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: invalid shape -- keeping last-known-good");
     return false;
   }
   String canonicalCallers;
@@ -1145,12 +1363,19 @@ bool pullWhitelist() {
   // Empty callers[] is valid (all deleted). Malformed-only payload with no
   // valid numbers when server sent entries is treated as failed validation.
   if (anyInvalid && n == 0 && doc["callers"].as<JsonArray>().size() > 0) {
-    Serial.println("Whitelist: validation failed Ã¢â‚¬â€ keeping last-known-good");
+    Serial.println("Whitelist: validation failed -- keeping last-known-good");
     return false;
   }
 
   // Persist and verify the inactive NVS slot before changing the active list.
   int64_t newVer = doc["version"] | 0;
+  // Skip NVS writes when whitelist payload is unchanged (reduces flash wear).
+  if (newVer == localWhitelistVersion &&
+      localWhitelistChecksum.length() == 64 &&
+      localWhitelistChecksum.equalsIgnoreCase(actualChecksum)) {
+    Serial.printf("Whitelist unchanged v%lld; skip NVS write\n", (long long)newVer);
+    return true;
+  }
   if (!persistWhitelistAtomic(temp, n, newVer)) return false;
   for (size_t i = 0; i < n; i++) callers[i] = temp[i];
   callerCount = n;
@@ -1222,17 +1447,24 @@ bool pullWhitelist() {
       if (!claimed) break;
 
       startRelayPulse();
+      // Day hold: startRelayPulse re-asserts AP and does not set relayActive.
+      // That is still a successful "gate open" path — ack success, not relay_busy.
+      const bool testOk = relayActive || dayHoldActive;
       JsonDocument ackDoc;
       ackDoc["commandId"] = commandId;
-      ackDoc["triggered"] = relayActive;
-      if (!relayActive) ackDoc["error"] = "relay_busy";
+      ackDoc["triggered"] = testOk;
+      if (dayHoldActive && !relayActive) {
+        ackDoc["mode"] = "day_hold";
+      }
+      if (!testOk) ackDoc["error"] = "relay_busy";
       String ackBody;
       serializeJson(ackDoc, ackBody);
       String ackResponse;
       httpSigned("POST", String("/gsm/device/") + DEVICE_ID + "/command-ack",
                  ackBody, ackResponse);
-      Serial.printf("Remote gate test %s: %s\n", commandId,
-                    relayActive ? "triggered" : "failed");
+      Serial.printf("Remote gate test %s: %s%s\n", commandId,
+                    testOk ? "triggered" : "failed",
+                    (dayHoldActive && !relayActive) ? " (day hold)" : "");
       break;
     }
   }
@@ -1362,7 +1594,7 @@ void processPendingCallEvent() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Call path (local only Ã¢â‚¬â€ never waits for cloud) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Call path (local only -- never waits for cloud) ----------------------------------------
 bool callLockoutActive() {
   return callLockout;
 }
@@ -1442,7 +1674,11 @@ void serviceHangup() {
   if (hangupAttempts >= HANGUP_MAX_ATTEMPTS) {
     Serial.println("CALL: AT+CHUP result: timeout");
     hangupPending = false;
-    setRelay(false);
+    // Never drop day-hold AP; only abort a night pulse if one was left on
+    if (!dayHoldActive) {
+      setPulseRelay(false);
+      relayActive = false;
+    }
     return;
   }
   sendAT("AT+CHUP");
@@ -1468,6 +1704,18 @@ void handleIncomingCaller(const String &rawNumber, const char *source) {
   lastCallHandledAt = millis();
   temporaryCallerNumber = e164;
   Serial.printf("CALL: Caller recovered from %s: %s\n", source, e164.c_str());
+
+  // Day hold: gate already constant-ON — hang up, do not start a timed pulse
+  // (a 3s pulse would schedule an OFF and drop the day hold).
+  if (dayHoldActive) {
+    const int idxDay = findCallerIndex(e164);
+    Serial.println("CALL: day hold — hang-up only (no night pulse)");
+    relayQueuedAfterHangup = false;
+    queueCallEvent(e164, idxDay >= 0, false,
+                   idxDay >= 0 ? "DAY_HOLD" : "DAY_HOLD_UNKNOWN", idxDay);
+    hangUpCall();
+    return;
+  }
 
   const int idx = findCallerIndex(e164);
   if (idx < 0) {
@@ -1660,8 +1908,9 @@ static String nextToken(const String &s, int &from) {
 // Serial provisioning (secrets never in source):
 //   PROVISION <secret> [version]
 //   WIFI "ssid with spaces" password
-//   WIFI ssid password
-//   SYNC | STATUS | MODEM_CHECK
+//   APN "name" [user] [pass]   | APN CLEAR
+//   DAY | NIGHT | HOLD OFF | PULSE | AUTO
+//   SYNC | STATUS | MODEM_CHECK | HELP
 void handleSerialCmd() {
   static String buf;
   while (Serial.available()) {
@@ -1706,6 +1955,52 @@ void handleSerialCmd() {
         } else {
           Serial.println("ERR Wi-Fi SSID empty");
         }
+      } else if (buf.startsWith("APN ") || buf == "APN CLEAR" || buf == "APN") {
+        if (buf == "APN CLEAR" || buf == "APN") {
+          if (buf == "APN CLEAR") {
+            saveApnToNvs("", "", "");
+            Serial.println("OK APN cleared (PDP skipped until re-set; reboot to reconfigure modem)");
+          } else {
+            Serial.println("usage: APN \"name\" [user] [pass]   or   APN CLEAR");
+            Serial.printf("current apn=%s user=%s\n",
+                          cellularApn.length() ? cellularApn.c_str() : "(none)",
+                          cellularUser.length() ? "set" : "(none)");
+          }
+        } else {
+          String rest = buf.substring(4);
+          rest.trim();
+          int pos = 0;
+          String apn = nextToken(rest, pos);
+          while (pos < (int)rest.length() && rest.charAt(pos) == ' ') pos++;
+          String user = nextToken(rest, pos);
+          while (pos < (int)rest.length() && rest.charAt(pos) == ' ') pos++;
+          String pass = nextToken(rest, pos);
+          if (apn.length() < 1) {
+            Serial.println("ERR usage: APN \"live.vodafone.com\" [user] [pass]");
+          } else {
+            saveApnToNvs(apn, user, pass);
+            Serial.printf("OK APN stored name=\"%s\" user=%s (reboot or MODEM reconfigure to apply)\n",
+                          apn.c_str(), user.length() ? "set" : "none");
+          }
+        }
+      } else if (buf == "DAY") {
+        scheduleOverride = ScheduleOverride::ForceDay;
+        updateDayHoldSchedule();
+        Serial.println("OK schedule override=DAY (HOLD AP on). Send AUTO for clock schedule.");
+      } else if (buf == "NIGHT" || buf == "HOLD OFF") {
+        scheduleOverride = ScheduleOverride::ForceNight;
+        updateDayHoldSchedule();
+        Serial.println("OK schedule override=NIGHT (HOLD off). Send AUTO for clock schedule.");
+      } else if (buf == "AUTO") {
+        scheduleOverride = ScheduleOverride::Auto;
+        updateDayHoldSchedule();
+        Serial.println("OK schedule override=AUTO (06:00-18:00 Melbourne hold)");
+      } else if (buf == "PULSE") {
+        if (dayHoldActive) {
+          Serial.println("WARN: day hold active — PP pulse skipped (use NIGHT first to test pulse)");
+        }
+        startRelayPulse();
+        Serial.printf("OK PULSE requested (active=%d hold=%d)\n", relayActive, dayHoldActive);
       } else if (buf == "RECONNECT") {
         Serial.println("WiFi: forced reconnect...");
         forceWifiReconnect();
@@ -1716,10 +2011,11 @@ void handleSerialCmd() {
         modemHexDiagnostics = false;
         Serial.println("OK modem raw hexadecimal diagnostics OFF");
       } else if (buf == "MODEM_CHECK") {
-        Serial.println("--- MODEM_CHECK start (ESP32 GPIO17=TXÃ¢â€ â€™modem RX, GPIO18=RXÃ¢â€ Âmodem TX, common GND) ---");
+        Serial.println("--- MODEM_CHECK start (ESP32 GPIO17=TX→modem RX, GPIO18=RX←modem TX, common GND) ---");
         const bool previousHexDiagnostics = modemHexDiagnostics;
         modemHexDiagnostics = true;
         sendATWait("AT");
+        sendATWait("ATS0?");
         sendATWait("AT+IPREX?");
         sendATWait("AT+CVHU?");
         sendATWait("AT+CPIN?");
@@ -1732,22 +2028,42 @@ void handleSerialCmd() {
         Serial.println("--- MODEM_CHECK done ---");
       } else if (buf == "SYNC") {
         pullWhitelist();
+      } else if (buf == "HELP") {
+        Serial.println(
+            "cmds: PROVISION | WIFI | APN | DAY | NIGHT | HOLD OFF | AUTO | PULSE | "
+            "SYNC | STATUS | RECONNECT | MODEM_CHECK | MODEM_HEX ON/OFF | raw AT…");
       } else if (buf == "STATUS") {
+        ensureMelbourneTz();
+        time_t now = time(nullptr);
+        struct tm t;
+        localtime_r(&now, &t);
+        const char *ov =
+            scheduleOverride == ScheduleOverride::ForceDay ? "DAY" :
+            scheduleOverride == ScheduleOverride::ForceNight ? "NIGHT" : "AUTO";
         Serial.printf(
-            "secret=%s secretVer=%lu wifi=%s wl_v=%lld n=%u wifi_up=%d relay=%d\n",
+            "unit=%s secret=%s secretVer=%lu wifi=%s apn=%s wl_v=%lld n=%u wifi_up=%d "
+            "pulse=%d hold_ap=%d sched=%s local=%02d:%02d clock_ok=%d pins hold=IO%u pulse=IO%u\n",
+            GATE_LABEL,
             deviceSecret.length() ? "yes" : "NO",
             (unsigned long)secretVersion,
             wifiSsid.length() ? "yes" : "NO",
+            cellularApn.length() ? cellularApn.c_str() : "NO",
             (long long)localWhitelistVersion,
             (unsigned)callerCount,
             WiFi.status() == WL_CONNECTED,
-            relayActive);
+            relayActive,
+            dayHoldActive,
+            ov,
+            t.tm_hour, t.tm_min,
+            clockLooksValid(),
+            (unsigned)RELAY_HOLD_PIN,
+            (unsigned)RELAY_PULSE_PIN);
       } else if (buf.length()) {
         if (buf.startsWith("AT") && buf.indexOf('\n') < 0 &&
             buf.indexOf('\r') < 0) {
           sendATWait(buf.c_str());
         } else {
-          Serial.println("ERR unknown command");
+          Serial.println("ERR unknown command (HELP for list)");
         }
       }
       buf = "";
@@ -1756,11 +2072,8 @@ void handleSerialCmd() {
 }
 
 void setup() {
-  // This must remain the first executable setup code. Pre-load the output latch
-  // LOW before changing direction to prevent even a transient active-high pulse.
-  digitalWrite(RELAY_PIN, LOW);
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
+  // Relays OFF before any other work (no false open on boot).
+  relaysInit();
   Serial.begin(USB_BAUD);
   delay(1200);
   modemLine.reserve(1024);
@@ -1768,12 +2081,12 @@ void setup() {
   modem.begin(MODEM_BAUD_DEFAULT, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
   activeModemBaud = MODEM_BAUD_DEFAULT;
 
-  // Relay must stay OFF through boot / reset
-  setRelay(false);
-
   Serial.println();
   Serial.println("RJL SG-PRO production - LKG whitelist - SMS job queue");
-  Serial.println("RELAY: OFF GPIO5=LOW (ACTIVE HIGH)");
+  Serial.printf("UNIT: %s  DEVICE_ID=%s\n", GATE_LABEL, DEVICE_ID);
+  Serial.println("SCHED: 06:00-18:00 HOLD(AP) constant | 18:00-06:00 PULSE(PP) 3s on call");
+  Serial.printf("RELAY: HOLD=IO%u→Roger AP  PULSE=IO%u→Roger PP  (both OFF at boot)\n",
+                (unsigned)RELAY_HOLD_PIN, (unsigned)RELAY_PULSE_PIN);
   loadCredentialsFromNvs();
   loadWhitelistFromNvs(); // last-known-good survives power loss
 
@@ -1790,6 +2103,16 @@ void setup() {
   }
 
   ensureWifi();
+  // NTP then force Melbourne TZ (configTime alone leaves UTC on many ESP32 cores)
+  if (WiFi.status() == WL_CONNECTED) {
+    syncNtpClock();
+    for (int i = 0; i < 30 && !clockLooksValid(); ++i) delay(200);
+    ensureMelbourneTz();
+  } else {
+    ensureMelbourneTz();
+  }
+  updateDayHoldSchedule();
+
   if (deviceSecret.length() >= 16 && wifiSsid.length() > 0) {
     pullWhitelist();
   } else {
@@ -1797,12 +2120,16 @@ void setup() {
       Serial.println("WARN: Serial: PROVISION <long-random-device-secret> [version]");
     }
     if (wifiSsid.length() < 1) {
-      Serial.println("WARN: Serial: WIFI <ssid> <password>");
+      Serial.println("WARN: Serial: WIFI \"ssid\" password");
     }
+  }
+  if (cellularApn.length() < 1) {
+    Serial.println("INFO: no cellular APN — Wi‑Fi for API is enough; optional: APN \"name\" [user] [pass]");
   }
   lastWhitelistPull = millis();
   lastHeartbeat = millis();
-  Serial.println("READY Ã¢â‚¬â€ calls use local LKG cache only (no cloud wait)");
+  lastScheduleTick = millis();
+  Serial.println("READY — day=HOLD(AP) | night=PULSE(PP) 3s | LKG whitelist | HELP");
 }
 
 void loop() {
@@ -1817,6 +2144,11 @@ void loop() {
   if (!callCritical) processPendingCallEvent();
   if (!callCritical) serviceSmsAcknowledgement();
   if (!callCritical) handleSerialCmd();
+
+  if (millis() - lastScheduleTick >= SCHEDULE_TICK_MS) {
+    lastScheduleTick = millis();
+    updateDayHoldSchedule();
+  }
 
   if (!callCritical && millis() - lastWhitelistPull >= WHITELIST_POLL_MS) {
     lastWhitelistPull = millis();
