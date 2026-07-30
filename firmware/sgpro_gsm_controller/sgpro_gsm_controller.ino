@@ -43,6 +43,7 @@
 
 // Explicit prototypes (do not rely on Arduino auto-prototype ordering).
 void resetIncomingCallState();
+void onHangupFinished(const char *how);
 void hangUpCall();
 void setRelaysSafeOff();
 void ensureMelbourneTz();
@@ -76,10 +77,13 @@ constexpr uint8_t MODEM_TX_PIN = 17;  // ESP32 sends to modem RXD
 // Runtime UART pins (detectModemBaud may swap if wiring is reversed).
 uint8_t modemRxPin = MODEM_RX_PIN;
 uint8_t modemTxPin = MODEM_TX_PIN;
-// Two relays (ACTIVE HIGH: GPIO HIGH = coil ON = NO contact closed)
+// Two relays. Polarity MUST be a preprocessor #define so #if works
+// (constexpr bool is NOT visible to the preprocessor — was compiling active-LOW always).
 constexpr uint8_t RELAY_HOLD_PIN = 4;   // day: constant → Roger AP–COM
 constexpr uint8_t RELAY_PULSE_PIN = 5;  // night: 3s pulse → Roger PP–COM
-constexpr bool RELAY_ACTIVE_HIGH = true;
+#ifndef RELAY_ACTIVE_HIGH
+#define RELAY_ACTIVE_HIGH 1  // 1 = GPIO HIGH closes NO; 0 = active-low modules
+#endif
 
 // Freenove 8 RGB LED module (WS2812 DIN) — status only, not gate control
 //   VCC→5V  GND→GND  DIN→IO8
@@ -288,7 +292,7 @@ size_t callerCount = 0;
 // ── Two relays (Roger B70/2ML) ───────────────────────────────────────────────
 // HOLD  IO4 → AP–COM  day constant closed contact (blocks auto-reclose)
 // PULSE IO5 → PP–COM  night 3s closed contact (step/open pulse)
-// Both ACTIVE HIGH unless RELAY_ACTIVE_HIGH is false.
+// RELAY_ACTIVE_HIGH is a #define (see pins). Do not use constexpr with #if.
 
 static inline void writeRelayPin(uint8_t pin, bool on) {
 #if RELAY_ACTIVE_HIGH
@@ -1952,6 +1956,23 @@ void resetIncomingCallState() {
   temporaryCallerNumber = "";
   lastClccQueryAt = 0;
   clccReplyPending = false;
+  relayQueuedAfterHangup = false;
+}
+
+// After CHUP finishes (or fails): free state machine so the next call works.
+// Accepted calls already use callLockout — clear when lockout ends.
+// Rejected / day / hidden MUST still clear or ringPending/hasHandledCall stick forever.
+void onHangupFinished(const char *how) {
+  hangupPending = false;
+  hangupAttempts = 0;
+  relayQueuedAfterHangup = false;
+  Serial.printf("CALL: hang-up finished (%s)\n", how ? how : "?");
+  if (callLockoutActive()) {
+    // Accepted-call path: keep hasHandledCall until lockout ends (updateCallLockout).
+    return;
+  }
+  // Reject / day / hidden / malformed / failsafe — unlock for next caller
+  resetIncomingCallState();
 }
 
 void hangUpCall() {
@@ -1977,11 +1998,15 @@ void serviceHangup() {
   if (!hangupPending || millis() - lastHangupAttemptAt < HANGUP_RETRY_MS) return;
   if (hangupAttempts >= HANGUP_MAX_ATTEMPTS) {
     Serial.println("CALL: AT+CHUP result: timeout");
-    hangupPending = false;
     // Always force PP off; never touch day HOLD incorrectly
-    relayActive = false;
-    setPulseRelay(false);
-    if (!dayHoldActive) setHoldRelay(false);
+    if (!dayHoldActive) {
+      relayActive = false;
+      setPulseRelay(false);
+      setHoldRelay(false);
+    } else {
+      setPulseRelay(false);
+    }
+    onHangupFinished("timeout");
     return;
   }
   sendAT("AT+CHUP");
@@ -2016,6 +2041,8 @@ void handleIncomingCaller(const String &rawNumber, const char *source) {
     relayQueuedAfterHangup = false;
     queueCallEvent(e164, idxDay >= 0, false,
                    idxDay >= 0 ? "DAY_HOLD" : "DAY_HOLD_UNKNOWN", idxDay);
+    // Lockout so ringPending/hasHandledCall clear after CHUP (was stuck forever)
+    startCallLockout();
     hangUpCall();
     return;
   }
@@ -2026,6 +2053,7 @@ void handleIncomingCaller(const String &rawNumber, const char *source) {
     Serial.printf("CALL: whitelist rejected %s reason=%s\n", e164.c_str(), reason);
     relayQueuedAfterHangup = false;
     queueCallEvent(e164, false, false, reason, -1);
+    startCallLockout();
     hangUpCall();
     return;
   }
@@ -2083,13 +2111,13 @@ void processModemLine(const String &rawLine, bool framingCorrupted) {
   if (hangupPending && (line == "OK" || line == "ERROR" ||
                         line.startsWith("+CME ERROR"))) {
     Serial.printf("CALL: AT+CHUP result: %s\n", line.c_str());
-    hangupPending = false;
+    onHangupFinished(line.c_str());
   }
 
   if (callLockoutActive() &&
       (line == "RING" || line.startsWith("+CLIP:") ||
        line.indexOf("+CRING:") >= 0)) {
-    return; // Ignore every incoming-call URC throughout the accepted-call lockout.
+    return; // Ignore every incoming-call URC throughout the call lockout.
   }
 
   if (line == "OK" || line.startsWith("ERROR") || line.startsWith("+CME ERROR"))
@@ -2117,17 +2145,19 @@ void processModemLine(const String &rawLine, bool framingCorrupted) {
     Serial.printf("CALL: caller ID raw=%s\n",
                   clipNumber.length() ? clipNumber.c_str() : "<hidden>");
     if (!clipNumber.length()) {
-      if (!callLockoutActive() && !hasHandledCall) {
+      if (!callLockoutActive() && !hasHandledCall && !hangupPending) {
         hasHandledCall = true;
         Serial.println("CALL: whitelist rejected reason=HIDDEN_PRIVATE");
         queueCallEvent("", false, false, "HIDDEN_PRIVATE", -1);
+        startCallLockout();
         hangUpCall();
       }
     } else if (!cacheIncomingCaller(clipNumber, "CLIP") &&
-               !callLockoutActive() && !hasHandledCall) {
+               !callLockoutActive() && !hasHandledCall && !hangupPending) {
       hasHandledCall = true;
       Serial.println("CALL: whitelist rejected reason=MALFORMED");
       queueCallEvent("", false, false, "MALFORMED", -1);
+      startCallLockout();
       hangUpCall();
     }
   } else if (incomingClcc) {
@@ -2154,11 +2184,16 @@ void processModemLine(const String &rawLine, bool framingCorrupted) {
       line.startsWith("MISSED_CALL:") ||
       (line.indexOf("VOICE CALL") >= 0 && line.indexOf("END") >= 0)) {
     if (hangupPending) {
-      hangupPending = false;
-      Serial.println("CALL: hang-up confirmed by modem");
-      relayQueuedAfterHangup = false;
-    } else if (ringPending) {
+      Serial.println("CALL: hang-up confirmed by modem (end URC)");
+      onHangupFinished("end_urc");
+    } else if (ringPending && !hasHandledCall) {
+      // Still ringing with no ID handled — drop once
+      hasHandledCall = true;
+      startCallLockout();
       hangUpCall();
+    } else if (ringPending && hasHandledCall && !callLockoutActive()) {
+      // Call already decided but state not cleared — free machine
+      resetIncomingCallState();
     }
   }
 }
@@ -2168,24 +2203,28 @@ void readModem() {
 }
 
 void recoverIncomingCall() {
-  if (!ringPending || hasHandledCall || hangupPending) return;
+  if (!ringPending || hasHandledCall || hangupPending || callLockoutActive()) return;
   if (isValidCallerNumber(temporaryCallerNumber)) {
     handleIncomingCaller(temporaryCallerNumber, "cached caller ID");
     return;
   }
   const uint32_t elapsed = millis() - ringStartedAt;
   if (elapsed >= CALL_FAILSAFE_MS) {
-    Serial.println("CALL: whitelist rejected reason=HIDDEN_PRIVATE");
+    // Mark handled BEFORE hangup so we never spam CHUP every loop (was critical).
+    hasHandledCall = true;
+    Serial.println("CALL: whitelist rejected reason=HIDDEN_PRIVATE (failsafe)");
     queueCallEvent("", false, false, "HIDDEN_PRIVATE", -1);
+    startCallLockout();
     hangUpCall();
     return;
   }
-  if (elapsed >= CLCC_RECOVERY_MS) return;
-  if (lastClccQueryAt == 0 || millis() - lastClccQueryAt >= CLCC_QUERY_INTERVAL_MS) {
-    clccReplyPending = true;
-    lastClccQueryAt = millis();
-    Serial.println("CALL: Querying AT+CLCC");
-    sendAT("AT+CLCC");
+  if (elapsed < CLCC_RECOVERY_MS) {
+    if (lastClccQueryAt == 0 || millis() - lastClccQueryAt >= CLCC_QUERY_INTERVAL_MS) {
+      clccReplyPending = true;
+      lastClccQueryAt = millis();
+      Serial.println("CALL: Querying AT+CLCC");
+      sendAT("AT+CLCC");
+    }
   }
 }
 
