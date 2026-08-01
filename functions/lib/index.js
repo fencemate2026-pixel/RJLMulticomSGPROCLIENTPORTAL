@@ -90,7 +90,10 @@ exports.requestRemoteGateTest = (0, https_1.onCall)(async (request) => {
     const accountId = String(user.accountId || "");
     const accountRef = db.collection("clientAccounts").doc(accountId);
     const devices = await accountRef.collection("gsmDevices").where("enabled", "==", true).get();
-    const deviceId = devices.docs[0]?.id || "device_commercial_bc_01";
+    if (devices.empty) {
+        throw new https_1.HttpsError("failed-precondition", "No enabled GSM device is registered for this property.");
+    }
+    const deviceId = devices.docs[0].id;
     const commandRef = db.collection("gsmDeviceCommands").doc();
     await commandRef.set({
         accountId,
@@ -204,7 +207,10 @@ exports.createSmsCampaign = (0, https_1.onCall)(async (request) => {
     if (!account.exists || account.data()?.enabled === false) {
         throw new https_1.HttpsError("failed-precondition", "This property is disabled.");
     }
-    const deviceId = devices.docs[0]?.id || "device_commercial_bc_01";
+    if (devices.empty) {
+        throw new https_1.HttpsError("failed-precondition", "No enabled GSM device is registered for this property.");
+    }
+    const deviceId = devices.docs[0].id;
     const now = Date.now();
     const recipients = callerDocs.flatMap((snap) => {
         if (!snap.exists)
@@ -863,9 +869,13 @@ exports.gsmDeviceApi = (0, https_1.onRequest)({
                 latitude <= 90 &&
                 longitude >= -180 &&
                 longitude <= 180;
+            // Do not force enabled:true on heartbeat — that defeated the operator
+            // kill-switch on gsmDevices.enabled. New devices default to enabled
+            // only when the doc is first created (merge without overwriting).
+            const deviceRef = accountRef.collection("gsmDevices").doc(deviceId);
+            const existingDevice = await deviceRef.get();
             const payload = {
                 deviceName: body.deviceName || deviceId,
-                enabled: true,
                 firmwareVersion: String(body.firmwareVersion || ""),
                 modemModel: String(body.modemModel || "SIM7600G-H"),
                 signalStrength: body.signalStrength != null ? Number(body.signalStrength) : null,
@@ -903,9 +913,10 @@ exports.gsmDeviceApi = (0, https_1.onRequest)({
                     }
                     : {}),
             };
-            await accountRef.collection("gsmDevices").doc(deviceId).set(payload, {
-                merge: true,
-            });
+            if (!existingDevice.exists) {
+                payload.enabled = true;
+            }
+            await deviceRef.set(payload, { merge: true });
             const accountSnap = await accountRef.get();
             return json(res, 200, {
                 ok: true,
