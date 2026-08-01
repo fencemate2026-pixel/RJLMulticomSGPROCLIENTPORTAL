@@ -51,14 +51,10 @@ service cloud.firestore {
     match /clientUsers/{userId} {
       allow read: if signedIn() && (uid() == userId || isRjlAdmin());
 
-      // Self-create only for bootstrap (debug) with locked privileged shape;
-      // Owner may create MEMBER docs for their account (family invite).
+      // Provisioning is admin-only (or OWNER inviting a MEMBER onto their own
+      // account). Clients must never self-create OWNER/MEMBER for an arbitrary
+      // accountId — that was a privilege-escalation path to remote gate open.
       allow create: if isRjlAdmin()
-        || (signedIn()
-            && uid() == userId
-            && request.resource.data.keys().hasAll(['accountId', 'email', 'role', 'enabled'])
-            && request.resource.data.role in ['OWNER', 'MEMBER']
-            && request.resource.data.enabled == true)
         || (signedIn()
             && userEnabled()
             && userDoc().role == 'OWNER'
