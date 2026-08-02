@@ -1,5 +1,17 @@
 # Mildura Pi — Full System Audit (2026-08-02)
 
+> **DO NOT DEPLOY** the `mildura-boomgate-hardened/` tree to the live Pi.
+> It is a reference rewrite from offline snapshots only. The live Pi already
+> has a more advanced `app.py` than those snapshots (see
+> `scripts/patch_mildura_pulse_force_off.py`, which expects live helpers like
+> `hold_should_be_on` / `_relay_lock`). Blind deploy risks regressing working
+> gate behaviour.
+>
+> **Next real move:** get Tailscale SSH credentials into `.local/mildura.env`,
+> run a **read-only** live audit (`scripts/full_mildura_pi_audit.py`), pull a
+> copy of the live `app.py` / `database.py` / unit file, diff against this
+> report, then apply **surgical** patches only (never a full tree replace).
+
 Scope: Raspberry Pi boom-gate stack for Mildura Working Man's Club
 (`mildura-boomgate` service, Wiegand keypad, ORO hold relay, Flask dashboard,
 portal heartbeat, Airtable sync, healthcheck).
@@ -10,7 +22,7 @@ every on-disk snapshot: `_live/`, `boomgate-live.tgz`, `boomgate-fixed.tgz`,
 `boomgate-dashboard.tgz`, and the management scripts in
 `RJLMulticomSGPROCLIENTPORTAL`.
 
-Fixes from this audit are in the hardened tree under `mildura-boomgate/`.
+Reference fixes (not for blind deploy) live under `mildura-boomgate-hardened/`.
 
 ---
 
@@ -18,11 +30,11 @@ Fixes from this audit are in the hardened tree under `mildura-boomgate/`.
 
 | Severity | Count | Status |
 |---|---|---|
-| CRITICAL | 4 | Fixed in hardened package |
-| HIGH | 9 | Fixed / mitigated |
-| MEDIUM | 8 | Fixed / mitigated |
-| LOW | 5 | Fixed / noted |
-| OPS | 2 | Requires on-site action |
+| CRITICAL | 4 | Documented; verify on live before patching |
+| HIGH | 9 | Documented; verify on live before patching |
+| MEDIUM | 8 | Documented |
+| LOW | 5 | Documented |
+| OPS | 1 | **Next:** live read-only SSH audit (do not deploy rewrite) |
 
 ---
 
@@ -96,54 +108,47 @@ could leave hold stuck after reboot.
 
 ---
 
-## OPS (on-site required)
+## OPS — next real move (ordered)
 
-1. **Rotate portal `DEVICE_SECRET`** and reinstall `/etc/rjl-portal.env` from the
-   new example (never commit the real file).
-2. **Deploy hardened package** to the Pi:
-
-```bash
-# From a machine on Tailscale:
-scp -r mildura-boomgate rjlcommercial@100.103.206.69:~/
-ssh rjlcommercial@100.103.206.69
-cd ~/mildura-boomgate
-# Preserve existing /etc/boomgate.env if present, else install.sh creates one
-sudo ./install.sh   # or: sudo systemctl restart boomgate after rsync
-curl -sS http://127.0.0.1:5000/api/status
-./healthcheck.sh
-```
-
-3. If physical keypad PINs suddenly fail after deploy, set
-   `WIEGAND_INVERT_BITS=1` in `/etc/boomgate.env` and restart.
-
-4. Provide `.local/mildura.env` to cloud agents for future live audits:
+1. **Do not deploy** `mildura-boomgate-hardened/` (or any full-tree replace).
+2. **Provide live SSH access** for agents / laptop on Tailscale:
 
 ```
+# .local/mildura.env  (gitignored)
 MILDURA_SSH_HOST=100.103.206.69
 MILDURA_SSH_USER=rjlcommercial
 MILDURA_SSH_PASSWORD=...
 ```
+
+3. **Read-only live audit** (no code write):
+
+```bash
+python scripts/full_mildura_pi_audit.py --out /tmp/pi-live-audit.md
+```
+
+4. **Pull live sources** and diff against this report / the reference tree:
+   - `/home/rjlcommercial/boomgate/app.py`
+   - `/home/rjlcommercial/boomgate/database.py`
+   - `/home/rjlcommercial/boomgate/wiegand.py`
+   - systemd unit + `/etc/boomgate.env` presence (not secrets in git)
+5. **Only then** apply surgical patches (prefer existing tools like
+   `scripts/patch_mildura_pulse_force_off.py` / tiny targeted edits).
+6. Separately: **rotate** any portal `DEVICE_SECRET` that appeared in old
+   public tarballs — that is credential hygiene, not a gate deploy.
 
 ---
 
 ## Verification performed (this agent)
 
 - Static audit of all snapshots + management scripts
-- `py_compile` on hardened modules
-- Simulated GPIO smoke test: pulse force-off, schedule hold, lockdown ignore
+- `py_compile` + simulated GPIO smoke on the *reference* rewrite
 - Live Tailscale SSH: **blocked from this environment**
+- **No live deploy attempted**
 
 ---
 
-## Files changed
+## Files in this PR (reference only)
 
-- `mildura-boomgate/app.py` — hardened relay/hold/lockdown/auth
-- `mildura-boomgate/database.py` — WAL, safe stats query
-- `mildura-boomgate/wiegand.py` — polarity + invert flag
-- `mildura-boomgate/install.sh` — EnvironmentFile secrets
-- `mildura-boomgate/healthcheck.sh` — hold/lockdown safety
-- `mildura-boomgate/import_staff.py` — `secrets` 6-digit PINs
-- `mildura-boomgate/templates/dashboard.html` — XSS escape
-- `mildura-boomgate/portal/*` — secrets removed; example only
-- `mildura-boomgate/boomgate.env.example`
-- `docs/PI_FULL_AUDIT.md` (this file)
+- `mildura-boomgate-hardened/` — offline reference rewrite (**not for deploy**)
+- `docs/MILDURA_PI_FULL_AUDIT.md` — this file
+- `scripts/full_mildura_pi_audit.py` — live read-only auditor

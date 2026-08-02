@@ -1,5 +1,8 @@
 # Mildura Working Man's Club — Boom Gate Controller
 
+> **DO NOT DEPLOY** this tree to the live Pi. See [`DO_NOT_DEPLOY.md`](DO_NOT_DEPLOY.md).
+> Next real move: live read-only SSH audit, then surgical patches only.
+
 Raspberry Pi 5 powered boom/boom gate access control system.
 
 - Physical **Sebury sTouch 2** Wiegand keypad (GPIO 17/27)
