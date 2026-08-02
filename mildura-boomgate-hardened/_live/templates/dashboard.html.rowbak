@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<style>
+/* Force gauge / chart / map cards into one horizontal row */
+.grid{
+  display:grid !important;
+  grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+  gap:16px !important;
+  align-items:start !important;
+  max-width:none !important;
+}
+.grid > .card{ width:auto !important; max-width:none !important; margin:0 !important; }
+@media(max-width:980px){ .grid{ grid-template-columns:1fr !important; } }
+</style>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RJL Commercial — Online Portal</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#f0f2f5; --surface:#fff; --surface2:#f8f9fa; --border:#e0e0e0;
+  --orange:#FF6B00; --green:#00C853; --red:#FF3131; --amber:#FFB300; --blue:#0066FF;
+  --text:#1a1a2e; --muted:#6c757d; --radius:10px;
+}
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+.rjl-header { background:#1a1a2e; padding:.9rem 1.5rem; display:flex; align-items:center; border-bottom:4px solid var(--orange); }
+.rjl-sub { font-size:.78rem; color:#adb5bd; margin-top:.35rem; }
+.rjl-logout { margin-left:auto; color:#adb5bd; font-size:.82rem; text-decoration:none; border:1px solid #444; border-radius:6px; padding:.3rem .75rem; }
+.rjl-logout:hover { color:#fff; border-color:#fff; }
+.session-banner { background:var(--green); color:#fff; padding:.6rem 1.5rem; display:flex; align-items:center; gap:1rem; font-weight:700; font-size:.9rem; }
+.session-banner form { margin-left:auto; }
+.btn-end-session { background:rgba(0,0,0,.2); color:#fff; border:1px solid rgba(255,255,255,.4); border-radius:6px; padding:.3rem .75rem; font-size:.8rem; cursor:pointer; font-weight:600; }
+.banner { display:flex; align-items:center; gap:1rem; padding:.85rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.site-name { font-size:.95rem; font-weight:700; }
+.gate-status { display:flex; align-items:center; gap:.55rem; background:var(--surface2); border:2px solid var(--border); border-radius:999px; padding:.35rem .9rem; font-size:.82rem; font-weight:700; }
+.gate-status.open { border-color:var(--green); color:var(--green); }
+.gate-status.closed { border-color:var(--amber); color:var(--amber); }
+.status-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.open .status-dot { background:var(--green); box-shadow:0 0 8px var(--green); }
+.closed .status-dot { background:var(--amber); }
+.now { font-size:.78rem; color:var(--muted); }
+.banner-actions { display:flex; gap:.6rem; margin-left:auto; align-items:center; flex-wrap:wrap; }
+.gpio-tag { font-size:.7rem; color:var(--muted); background:var(--surface2); border:1px solid var(--border); border-radius:999px; padding:.18rem .6rem; }
+.btn-open { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:.5rem 1.1rem; font-size:.85rem; font-weight:700; cursor:pointer; box-shadow:0 2px 8px rgba(0,200,83,.35); }
+.btn-open:hover { filter:brightness(1.1); }
+.btn-nav { text-decoration:none; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); padding:.5rem 1rem; font-size:.85rem; font-weight:600; cursor:pointer; }
+.btn-nav:hover { border-color:var(--orange); color:var(--orange); }
+.flashes { padding:.75rem 1.5rem 0; }
+.flash { padding:.65rem 1rem; border-radius:var(--radius); font-size:.86rem; margin-bottom:.5rem; }
+.flash.success { background:#d4f5e2; border:1px solid var(--green); color:#006629; }
+.flash.error { background:#ffe5e5; border:1px solid var(--red); color:#8b0000; }
+.main { padding:1.25rem 1.5rem; display:grid; gap:1.25rem; }
+.row2 { display:grid; grid-template-columns:1.35fr 1fr; gap:1.25rem; }
+.row3 { display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; }
+@media (max-width:900px){ .row2,.row3{ grid-template-columns:1fr; } }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.15rem; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+.card-title { font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--orange); margin-bottom:1rem; }
+.auth-grid { display:flex; flex-direction:column; gap:.6rem; margin-bottom:1rem; }
+.auth-person-row { display:flex; align-items:center; gap:.75rem; padding:.75rem 1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; flex-wrap:wrap; }
+.auth-info { flex:1; min-width:150px; }
+.auth-person-name { font-weight:700; font-size:.9rem; }
+.auth-person-meta { font-size:.75rem; color:var(--muted); margin-top:.12rem; }
+.auth-person-pin code { background:#fff3e0; border:1px solid #FFD0A0; border-radius:4px; padding:.05rem .35rem; font-size:.82rem; font-weight:700; color:var(--orange); font-family:monospace; }
+.auth-checks { display:flex; gap:.85rem; flex-wrap:wrap; align-items:center; }
+.auth-check { display:flex; align-items:center; gap:.35rem; font-size:.8rem; cursor:pointer; user-select:none; }
+.auth-check input[type=checkbox] { width:15px; height:15px; accent-color:var(--green); cursor:pointer; }
+.auth-check.ticked { color:var(--green); font-weight:600; }
+.btn-start { background:var(--orange); color:#fff; border:none; border-radius:6px; padding:.35rem .85rem; font-size:.8rem; font-weight:700; cursor:pointer; opacity:.4; pointer-events:none; transition:opacity .2s; white-space:nowrap; }
+.btn-start.ready { opacity:1; pointer-events:auto; box-shadow:0 2px 8px rgba(255,107,0,.35); }
+.add-auth-form { display:flex; gap:.5rem; flex-wrap:wrap; padding:.85rem; background:#fff8f4; border:1px solid #FFD0A0; border-radius:8px; }
+.add-auth-form input { flex:1; min-width:110px; background:#fff; border:1px solid var(--border); border-radius:6px; color:var(--text); padding:.45rem .7rem; font-size:.82rem; }
+.btn-add-auth { background:var(--orange); color:#fff; border:none; border-radius:6px; padding:.45rem 1rem; font-size:.82rem; font-weight:700; cursor:pointer; white-space:nowrap; }
+.sched-strip { display:flex; gap:.65rem; flex-wrap:wrap; }
+.sched-item { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:.6rem .85rem; display:flex; align-items:center; gap:.65rem; min-width:200px; flex:1; }
+.sched-item.active { border-color:var(--green); background:#f0fff8; }
+.sched-item.active .sched-name { color:var(--green); }
+.sched-name { font-weight:600; font-size:.88rem; }
+.sched-times { font-size:.76rem; color:var(--muted); }
+.sched-days { font-size:.72rem; color:var(--blue); }
+.sched-btns { display:flex; gap:.35rem; margin-left:auto; }
+.form-inline { display:flex; gap:.55rem; flex-wrap:wrap; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:.75rem; margin-top:.75rem; }
+.form-inline input,.form-inline select { flex:1; min-width:100px; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:.45rem .7rem; font-size:.82rem; }
+.days-mini { display:flex; gap:.25rem; flex-wrap:wrap; align-items:center; }
+.day-chip { display:flex; align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:.18rem .4rem; font-size:.72rem; cursor:pointer; user-select:none; }
+.day-chip:has(input:checked) { background:#e8f5ff; border-color:var(--blue); color:var(--blue); }
+.day-chip input { display:none; }
+.user-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:1.25rem; }
+.user-card { background:var(--surface2); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.user-card.off { opacity:.5; }
+.user-row { display:flex; align-items:center; gap:.6rem; padding:.55rem .8rem; flex-wrap:wrap; }
+.uname { font-weight:600; font-size:.88rem; flex:1; min-width:80px; }
+.user-card.off .uname::after { content:'DISABLED'; margin-left:.4rem; font-size:.62rem; font-weight:800; color:var(--red); background:#ffe5e5; border-radius:3px; padding:.08rem .28rem; vertical-align:middle; }
+code { background:#fff3e0; border:1px solid #FFD0A0; border-radius:4px; padding:.08rem .38rem; font-size:.8rem; font-weight:700; color:var(--orange); font-family:monospace; }
+.spill { font-size:.7rem; font-weight:700; border-radius:999px; padding:.15rem .5rem; }
+.spill.always { background:#d4f5e2; color:#006629; }
+.spill.timerange { background:#fff3e0; color:#a84700; }
+.uacts { display:flex; gap:.35rem; margin-left:auto; flex-shrink:0; flex-wrap:wrap; }
+.btn { border:1px solid var(--border); background:var(--surface); color:var(--text); border-radius:6px; padding:.26rem .58rem; font-size:.74rem; cursor:pointer; white-space:nowrap; transition:background .1s; }
+.btn:hover { background:#f0f0f0; }
+.btn.red { border-color:var(--red); color:var(--red); }
+.btn.red:hover { background:#ffe5e5; }
+.btn.grn { border-color:var(--green); color:var(--green); }
+.btn.grn:hover { background:#d4f5e2; }
+.btn.amb { border-color:var(--amber); color:var(--amber); }
+.btn.amb:hover { background:#fff8e1; }
+.edit-panel { display:none; border-top:1px solid var(--border); background:#fafafa; padding:.8rem; }
+.edit-panel.open { display:block; }
+.time-block { display:none; }
+.time-block.show { display:block; }
+.days-row { display:flex; gap:.3rem; flex-wrap:wrap; margin:.45rem 0; }
+.day-lbl { display:flex; align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:5px; padding:.2rem .45rem; font-size:.72rem; cursor:pointer; user-select:none; }
+.day-lbl:has(input:checked) { background:#fff3e0; border-color:var(--orange); color:#a84700; }
+.day-lbl input { display:none; }
+.time-row { display:flex; gap:.5rem; margin-top:.4rem; flex-wrap:wrap; }
+.time-row label { font-size:.72rem; color:var(--muted); display:block; margin-bottom:.18rem; }
+.t-input { background:var(--surface); border:1px solid var(--border); border-radius:5px; color:var(--text); padding:.3rem .5rem; font-size:.8rem; }
+.btn-add { background:var(--orange); color:#fff; border:none; border-radius:6px; padding:.48rem 1rem; font-size:.83rem; font-weight:700; cursor:pointer; white-space:nowrap; box-shadow:0 2px 8px rgba(255,107,0,.3); }
+.btn-save { background:var(--amber); color:#000; border:none; border-radius:5px; padding:.3rem .75rem; font-size:.76rem; font-weight:700; cursor:pointer; margin-top:.5rem; }
+.log-tabs { display:flex; border-bottom:2px solid var(--border); margin-bottom:1rem; }
+.log-tab { padding:.45rem .9rem; font-size:.8rem; font-weight:600; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-2px; }
+.log-tab.active { color:var(--orange); border-bottom-color:var(--orange); }
+.log-panel { display:none; }
+.log-panel.active { display:block; }
+table { width:100%; border-collapse:collapse; font-size:.82rem; }
+th { text-align:left; padding:.38rem .6rem; color:var(--muted); font-weight:500; border-bottom:1px solid var(--border); background:var(--surface2); }
+td { padding:.46rem .6rem; border-bottom:1px solid var(--border); }
+.badge { display:inline-block; padding:.14rem .45rem; border-radius:999px; font-size:.68rem; font-weight:700; }
+.badge.ok { background:#d4f5e2; color:#006629; }
+.badge.fail { background:#ffe5e5; color:#8b0000; }
+.badge.auto { background:#e8f0ff; color:#003399; }
+.badge.rem { background:#f0e8ff; color:#5500aa; }
+.badge.chg { background:#fff3e0; color:#a84700; }
+.ts { color:var(--muted); font-size:.72rem; }
+.method-tag { font-size:.68rem; color:var(--muted); }
+.empty { color:var(--muted); font-size:.82rem; padding:.5rem 0; }
+.sep { font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--orange); margin:1.1rem 0 .65rem; }
+.graph-wrap { position:relative; height:240px; }
+#siteMap { height:240px; border-radius:8px; }
+
+.gauge-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 1rem;
+}
+.gauge-container {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  margin: 0.5rem 0;
+}
+.gauge-value {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+}
+.gauge-value span:first-child {
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+.gauge-unit {
+  font-size: 1rem;
+  color: var(--muted);
+  margin-left: 2px;
+}
+.gauge-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--surface2);
+  margin-top: 0.25rem;
+}
+
+</style>
+</head>
+<body>
+<div class="rjl-header">
+  <div>
+    <img src="/static/logo.jpg" alt="RJL Commercial" style="height:48px;display:block">
+    <div class="rjl-sub">Online Portal &mdash; Mildura Working Man's Club</div>
+  </div>
+  <a class="rjl-logout" href="/logout">Logout</a>
+</div>
+{% if current_requester %}
+<div class="session-banner">
+  &#9989;&nbsp; Session Active &mdash; Requested by: <strong>{{ current_requester }}</strong>
+  <form method="post" action="/clear_requester"><button type="submit" class="btn-end-session">End Session</button></form>
+</div>
+{% endif %}
+<div class="banner">
+  <span class="site-name">Boom Gate Control</span>
+  {% if lockdown %}
+  <div class="gate-status closed" style="background:var(--red);color:#fff"><div class="status-dot"></div>&#128308; LOCKED DOWN &mdash; all access blocked</div>
+  {% elif hold_open and auto_open %}
+  <div class="gate-status open"><div class="status-dot"></div>HELD OPEN &mdash; Schedule: {{ auto_name }}</div>
+  {% elif hold_open %}
+  <div class="gate-status open" style="background:var(--amber);color:#000"><div class="status-dot"></div>HELD OPEN &mdash; Manual</div>
+  {% else %}
+  <div class="gate-status closed"><div class="status-dot"></div>PIN REQUIRED</div>
+  {% endif %}
+  <span class="now">{{ now }}</span>
+  <div class="banner-actions">
+    <span class="gpio-tag">GPIO {{ 'LIVE' if gpio else 'SIM' }}</span>
+    <span class="gpio-tag" id="tempChip">CPU --&deg;C</span>
+    <form method="post" action="/gate/open" style="display:inline"><button type="submit" class="btn-open">&#9889; Open Gate</button></form>
+    {% if hold_open %}
+    <form method="post" action="/hold_open" style="display:inline"><button type="submit" class="btn-open" style="background:var(--amber);color:#000">&#128274; Release Hold</button></form>
+    {% else %}
+    <form method="post" action="/hold_open" style="display:inline"><button type="submit" class="btn-open" style="background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:none">&#128275; Hold Open</button></form>
+    {% endif %}
+    {% if lockdown %}
+    <form method="post" action="/lockdown" style="display:inline" onsubmit="return confirm('CLEAR lockdown and resume normal gate operation?')"><input type="hidden" name="state" value="off"><button type="submit" class="btn-open" style="background:var(--red);color:#fff;font-weight:800">&#128275; CLEAR LOCKDOWN</button></form>
+    {% else %}
+    <form method="post" action="/lockdown" style="display:inline" onsubmit="return confirm('LOCK DOWN the gate? This blocks ALL access until cleared.')"><input type="hidden" name="state" value="on"><button type="submit" class="btn-open" style="background:var(--red);color:#fff;font-weight:800">&#128308; LOCKDOWN</button></form>
+    {% endif %}
+    <button type="button" class="btn-nav" style="border-color:var(--orange);color:var(--orange);font-weight:700" onclick="document.getElementById('addUserModal').style.display='flex'">+ Add User</button>
+    <a class="btn-nav" href="/export_pdf" target="_blank">&#128196; Export PDF</a>
+    <a class="btn-nav" href="/keypad">Keypad</a>
+  </div>
+</div>
+<div id="addUserModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:#fff;border-radius:12px;padding:1.5rem;width:90%;max-width:420px;box-shadow:0 10px 40px rgba(0,0,0,.3)">
+    <div style="display:flex;align-items:center;margin-bottom:1rem">
+      <h3 style="font-size:1rem;color:var(--orange);text-transform:uppercase">Add New User</h3>
+      <button type="button" onclick="document.getElementById('addUserModal').style.display='none'" style="margin-left:auto;background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted)">&times;</button>
+    </div>
+    <form method="post" action="/add_user">
+      <input type="text" name="name" placeholder="Full name" required autocomplete="off" style="width:100%;padding:.6rem .8rem;margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;font-size:.9rem">
+      <input type="text" name="pin" placeholder="PIN (4-8 digits, no leading 0)" pattern="[1-9][0-9]{3,7}" inputmode="numeric" required autocomplete="off" style="width:100%;padding:.6rem .8rem;margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;font-size:.9rem">
+      <select name="schedule_type" style="width:100%;padding:.6rem .8rem;margin-bottom:1rem;border:1px solid var(--border);border-radius:8px;font-size:.9rem">
+        <option value="always">Always — 24/7 access</option>
+        <option value="time_range">Time range (set after adding)</option>
+      </select>
+      <button type="submit" class="btn-add" style="width:100%;padding:.7rem">Add User</button>
+    </form>
+  </div>
+</div>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}<div class="flashes">{% for cat,msg in messages %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}</div>{% endif %}
+{% endwith %}
+<div class="main">
+  <div class="card">
+    <p class="card-title">Authorised Persons &mdash; Change Request Verification</p>
+    {% if auth_persons %}
+    <div class="auth-grid">
+      {% for p in auth_persons %}
+      <div class="auth-person-row">
+        <div class="auth-info">
+          <div class="auth-person-name">{{ p.name }}</div>
+          <div class="auth-person-meta">{% if p.role %}{{ p.role }}{% endif %}{% if p.role and p.phone %} &middot; {% endif %}{% if p.phone %}{{ p.phone }}{% endif %}&nbsp;&nbsp;PIN: <span class="auth-person-pin"><code>{{ p.pin }}</code></span></div>
+        </div>
+        <div class="auth-checks" id="checks-{{ p.id }}">
+          <label class="auth-check"><input type="checkbox" onchange="updateStart({{ p.id }})"> Identity Confirmed</label>
+          <label class="auth-check"><input type="checkbox" onchange="updateStart({{ p.id }})"> PIN Verified</label>
+          <label class="auth-check"><input type="checkbox" onchange="updateStart({{ p.id }})"> Change Authorised</label>
+        </div>
+        <form method="post" action="/set_requester" id="sr-{{ p.id }}"><input type="hidden" name="person_name" value="{{ p.name }}"><button type="submit" class="btn-start" id="start-{{ p.id }}">Start Session</button></form>
+        <form method="post" action="/delete_auth_person/{{ p.id }}" onsubmit="return confirm('Remove {{ p.name }}?')"><button type="submit" class="btn red" style="font-size:.7rem">&#10005;</button></form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="empty" style="margin-bottom:.85rem">No authorised persons yet &mdash; add one below.</p>{% endif %}
+    <form method="post" action="/add_auth_person">
+      <div class="add-auth-form">
+        <input type="text" name="ap_name" placeholder="Full name *" required autocomplete="off">
+        <input type="text" name="ap_role" placeholder="Role (e.g. Manager)" autocomplete="off">
+        <input type="text" name="ap_phone" placeholder="Phone" autocomplete="off">
+        <input type="text" name="ap_pin" placeholder="Verification PIN *" required autocomplete="off" inputmode="numeric">
+        <button type="submit" class="btn-add-auth">Add Person</button>
+      </div>
+    </form>
+  </div>
+  <div class="card gauge-card">
+  <p class="card-title">Board Temperature</p>
+   <div class="gauge-container">
+    <canvas id="tempGauge" width="220" height="220"></canvas>
+    <div class="gauge-value">
+      <span id="temp-value">—</span>
+      <span class="gauge-unit">°C</span>
+    </div>
+  </div>
+  
+  <div class="gauge-status" id="temp-status">Loading...</div>
+    <div class="card">
+      <p class="card-title">Keypad Usage &mdash; Last 30 Days</p>
+      <div class="graph-wrap"><canvas id="usageChart"></canvas></div>
+    </div>
+    <div class="card">
+      <p class="card-title">Site Location</p>
+      <div id="siteMap"></div>
+      <p id="siteAddr" style="font-size:.72rem;color:var(--muted);margin-top:.5rem;text-align:center"></p>
+    </div>
+  </div>
+  <div class="row3">
+    <div class="card">
+      <p class="card-title">Auto-Open Schedules</p>
+      <div class="sched-strip">
+        {% for s in auto_schedules %}
+          {% set s_days = s.days | fromjson %}
+          <div class="sched-item {{ 'active' if s.enabled else '' }}">
+            <div><div class="sched-name">{{ s.name }}</div><div class="sched-days">{{ s_days | format_days }}</div><div class="sched-times">{{ s.open_time }} &ndash; {{ s.close_time }}</div></div>
+            <div class="sched-btns">
+              <form method="post" action="/toggle_auto_schedule/{{ s.id }}"><button type="submit" class="btn {{ 'red' if s.enabled else 'grn' }}">{{ 'Disable' if s.enabled else 'Enable' }}</button></form>
+              <form method="post" action="/delete_auto_schedule/{{ s.id }}" onsubmit="return confirm('Remove?')"><button type="submit" class="btn red">&#10005;</button></form>
+            </div>
+          </div>
+        {% else %}<p class="empty">No auto-open schedules.</p>{% endfor %}
+      </div>
+      <form method="post" action="/add_auto_schedule">
+        <div class="form-inline">
+          <input type="text" name="sched_name" placeholder="Schedule name" required autocomplete="off">
+          <div class="days-mini">
+            {% for n,lbl in [(0,'M'),(1,'T'),(2,'W'),(3,'T'),(4,'F'),(5,'S'),(6,'S')] %}
+            <label class="day-chip"><input type="checkbox" name="sched_days" value="{{ n }}" {{ 'checked' if n < 5 }}>{{ lbl }}</label>
+            {% endfor %}
+          </div>
+          <input type="time" name="sched_open" value="10:00" style="width:100px;flex:none">
+          <span style="color:var(--muted);font-size:.8rem;align-self:center">to</span>
+          <input type="time" name="sched_close" value="22:00" style="width:100px;flex:none">
+          <button type="submit" class="btn-add">Add</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <p class="card-title">Access Breakdown</p>
+      <div class="graph-wrap"><canvas id="pieChart"></canvas></div>
+    </div>
+  </div>
+  <div class="row2">
+    <div class="card">
+      <p class="card-title">Authorised Users ({{ users | length }})</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
+        <form method="post" action="/enable_all" style="margin:0"><button type="submit" class="btn grn" style="font-weight:700">&#10003; Enable All</button></form>
+        <form method="post" action="/disable_all" style="margin:0" onsubmit="return confirm('Disable ALL users?')"><button type="submit" class="btn amb" style="font-weight:700">&#10005; Disable All</button></form>
+        <form method="post" action="/delete_all" style="margin:0;display:flex;gap:.4rem;align-items:center" onsubmit="return confirm('PERMANENTLY DELETE ALL USERS?')">
+          <input type="text" name="confirm_pin" placeholder="Admin PIN" inputmode="numeric" autocomplete="off" style="width:90px;padding:.3rem .5rem;border:1px solid var(--red);border-radius:6px;font-size:.78rem">
+          <button type="submit" class="btn red" style="font-weight:700">&#128465; Delete All</button>
+        </form>
+      </div>
+      {% if users %}
+      <div class="user-list">
+        {% for u in users %}
+          {% if u.schedule_data %}{% set sd = u.schedule_data | fromjson %}{% else %}{% set sd = {'days':[],'start':'08:00','end':'17:00'} %}{% endif %}
+          <div class="user-card {{ '' if u.enabled else 'off' }}">
+            <div class="user-row">
+              <span class="uname">{{ u.name }}</span>
+              <code>{{ u.pin }}</code>
+              {% if u.schedule_type == 'always' %}<span class="spill always">Always</span>
+              {% else %}<span class="spill timerange">Timed</span><span style="font-size:.7rem;color:var(--muted)">{{ sd.days | format_days }} {{ sd.start }}&ndash;{{ sd.end }}</span>{% endif %}
+              <div class="uacts">
+                <form method="post" action="/toggle_user/{{ u.id }}"><button type="submit" class="btn {{ 'red' if u.enabled else 'grn' }}">{{ 'Off' if u.enabled else 'On' }}</button></form>
+                <button type="button" class="btn amb" onclick="toggleEdit({{ u.id }})">Sched</button>
+                <form method="post" action="/delete_user/{{ u.id }}" onsubmit="return confirm('Remove {{ u.name }}?')"><button type="submit" class="btn red">&#10005;</button></form>
+              </div>
+            </div>
+            <div class="edit-panel" id="ep-{{ u.id }}">
+              <form method="post" action="/update_schedule/{{ u.id }}">
+                <select name="schedule_type" onchange="toggleTR(this,'tr-{{ u.id }}')">
+                  <option value="always" {{ 'selected' if u.schedule_type=='always' }}>Always</option>
+                  <option value="time_range" {{ 'selected' if u.schedule_type=='time_range' }}>Time range</option>
+                </select>
+                <div class="time-block {{ 'show' if u.schedule_type=='time_range' }}" id="tr-{{ u.id }}">
+                  <div class="days-row" style="margin-top:.5rem">
+                    {% for n,lbl in [(0,'Mon'),(1,'Tue'),(2,'Wed'),(3,'Thu'),(4,'Fri'),(5,'Sat'),(6,'Sun')] %}
+                    <label class="day-lbl"><input type="checkbox" name="days" value="{{ n }}" {{ 'checked' if n in sd.days }}>{{ lbl }}</label>
+                    {% endfor %}
+                  </div>
+                  <div class="time-row">
+                    <div><label>From</label><input type="time" name="start" value="{{ sd.start }}" class="t-input"></div>
+                    <div><label>To</label><input type="time" name="end" value="{{ sd.end }}" class="t-input"></div>
+                  </div>
+                </div>
+                <button type="submit" class="btn-save">Save</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% else %}<p class="empty">No users yet.</p>{% endif %}
+    </div>
+    <div class="card">
+      <div class="log-tabs">
+        <div class="log-tab active" onclick="switchTab('access')">Access Log</div>
+        <div class="log-tab" onclick="switchTab('changes')">Changes Log</div>
+      </div>
+      <div class="log-panel active" id="tab-access">
+        {% if logs %}
+        <table><tr><th>Time</th><th>User</th><th>Via</th><th>Result</th></tr>
+          {% for log in logs %}
+          <tr><td class="ts">{{ log.timestamp[5:16] }}</td><td>{{ log.user_name }}</td><td class="method-tag">{{ log.method }}</td>
+          <td>{% if log.success %}{% if log.method in ['auto-open','auto-close','wiegand-auto','web-auto'] %}<span class="badge auto">AUTO</span>{% elif log.method in ['remote-dashboard','dashboard'] %}<span class="badge rem">REMOTE</span>{% else %}<span class="badge ok">ACCESS</span>{% endif %}{% else %}<span class="badge fail">DENIED</span>{% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<p class="empty">No access events yet.</p>{% endif %}
+      </div>
+      <div class="log-panel" id="tab-changes">
+        {% if changes %}
+        <table><tr><th>Time</th><th>Action</th><th>Detail</th><th>By</th></tr>
+          {% for c in changes %}
+          <tr><td class="ts">{{ c.timestamp[5:16] }}</td><td><span class="badge chg">{{ c.action }}</span></td><td style="font-size:.78rem;color:var(--muted)">{{ c.detail }}</td><td style="font-size:.78rem;font-weight:600;color:var(--orange)">{{ c.changed_by }}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<p class="empty">No changes logged yet.</p>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function toggleEdit(uid){ document.getElementById('ep-'+uid).classList.toggle('open'); }
+function toggleTR(sel,id){ var el=document.getElementById(id); if(el) el.className='time-block'+(sel.value==='time_range'?' show':''); }
+function switchTab(tab){
+  document.querySelectorAll('.log-tab').forEach(function(t,i){ t.classList.toggle('active',(i===0&&tab==='access')||(i===1&&tab==='changes')); });
+  document.getElementById('tab-access').classList.toggle('active',tab==='access');
+  document.getElementById('tab-changes').classList.toggle('active',tab==='changes');
+}
+function updateStart(pid){
+  var checks=document.querySelectorAll('#checks-'+pid+' input[type=checkbox]');
+  var all=Array.from(checks).every(function(c){return c.checked;});
+  var btn=document.getElementById('start-'+pid); if(btn) btn.classList.toggle('ready',all);
+  checks.forEach(function(c){ c.closest('.auth-check').classList.toggle('ticked',c.checked); });
+}
+fetch('/api/keypad_stats').then(function(r){return r.json();}).then(function(data){
+  if(!data.length) return;
+  var ctx=document.getElementById('usageChart').getContext('2d');
+  new Chart(ctx,{type:'bar',data:{labels:data.map(function(d){return d.name;}),datasets:[{data:data.map(function(d){return d.count;}),backgroundColor:'#FF6B00',borderRadius:8,borderSkipped:false,barThickness:'flex',maxBarThickness:48}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:10},maxRotation:35},grid:{display:false}},y:{beginAtZero:true,ticks:{stepSize:1,font:{size:10}},grid:{color:'#f0f0f0'}}}}});
+}).catch(function(){});
+fetch('/api/access_breakdown').then(function(r){return r.json();}).then(function(d){
+  var ctx=document.getElementById('pieChart').getContext('2d');
+  new Chart(ctx,{type:'doughnut',data:{labels:['Granted','Denied','Auto-Open'],datasets:[{data:[d.granted||0,d.denied||0,d.auto||0],backgroundColor:['#00C853','#FF3131','#0066FF'],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{position:'bottom',labels:{font:{size:11},padding:14,usePointStyle:true}}}}});
+}).catch(function(){});
+fetch('/api/site').then(function(r){return r.json();}).then(function(s){
+  var map=L.map('siteMap').setView([s.lat,s.lng],16);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  L.marker([s.lat,s.lng]).addTo(map).bindPopup('<b>'+s.name+'</b><br>'+s.address).openPopup();
+  document.getElementById('siteAddr').textContent=s.address;
+  setTimeout(function(){map.invalidateSize();},200);
+}).catch(function(){});
+
+// Live CPU temperature gauge - polls /api/status every 10s
+function paintTemp(t){
+  var el=document.getElementById('tempChip');
+  if(!el) return;
+  if(t===null||t===undefined){ el.textContent='CPU --\u00B0C'; return; }
+  el.textContent='CPU '+t.toFixed(1)+'\u00B0C';
+  var bg,fg,bd;
+  if(t>=70){ bg='#FF3131'; fg='#fff'; bd='#FF3131'; }
+  else if(t>=60){ bg='#FFB020'; fg='#000'; bd='#FFB020'; }
+  else { bg='#00C853'; fg='#fff'; bd='#00C853'; }
+  el.style.background=bg; el.style.color=fg; el.style.borderColor=bd;
+  var col=(t>=70?'#FF3131':(t>=60?'#FFB020':'#00C853'));
+  var frac=Math.max(0,Math.min(1,(t-20)/60));
+  var fillTop=235-frac*195;
+  var merc=document.getElementById('mercFill');
+  var bulb=document.getElementById('mercBulb');
+  var big=document.getElementById('tempBig');
+  if(merc){ merc.setAttribute('y',fillTop); merc.setAttribute('height',235-fillTop); merc.setAttribute('fill',col); }
+  if(bulb){ bulb.setAttribute('fill',col); }
+  if(big){ big.textContent=t.toFixed(1)+'\u00B0'; big.setAttribute('fill',col); }
+}
+function pollStatus(){
+  fetch('/api/status').then(function(r){return r.json();}).then(function(s){
+    paintTemp(s.temp);
+  }).catch(function(){});
+}
+pollStatus();
+setInterval(pollStatus,10000);
+// ========== TEMPERATURE GAUGE (CLEAN) ==========
+let tempGaugeChart = null;
+
+function updateTemperatureGauge() {
+  fetch('/api/temperature')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      const temp = data.temperature || 0;
+      const valEl = document.getElementById('temp-value');
+      const statusEl = document.getElementById('temp-status');
+      if (!valEl) return;
+
+      valEl.textContent = temp;
+
+      if (temp >= 78) {
+        statusEl.textContent = 'CRITICAL';
+        statusEl.style.color = '#FF3131';
+      } else if (temp >= 68) {
+        statusEl.textContent = 'HIGH';
+        statusEl.style.color = 'var(--amber)';
+      } else if (temp >= 55) {
+        statusEl.textContent = 'Elevated';
+        statusEl.style.color = '#FFB300';
+      } else {
+        statusEl.textContent = 'Normal';
+        statusEl.style.color = '#00C853';
+      }
+
+      const ctx = document.getElementById('tempGauge');
+      if (!ctx) return;
+      const percent = Math.min(Math.max((temp / 100) * 100, 0), 100);
+
+      if (tempGaugeChart) {
+        tempGaugeChart.data.datasets[0].data = [percent, 100 - percent];
+        tempGaugeChart.update();
+      } else {
+        tempGaugeChart = new Chart(ctx.getContext('2d'), {
+          type: 'doughnut',
+          data: {
+            datasets: [{
+              data: [percent, 100 - percent],
+              backgroundColor: ['#00C853', '#2a2a2a'],
+              borderWidth: 0,
+              circumference: 270,
+              rotation: 225
+            }]
+          },
+          options: {
+            responsive: false,
+            maintainAspectRatio: false,
+            cutout: '78%',
+            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+          }
+        });
+      }
+    }).catch(function(){});
+}
+
+updateTemperatureGauge();
+setInterval(updateTemperatureGauge, 45000);
+// ========== END ==========
+</script>
+</body>
+</html>

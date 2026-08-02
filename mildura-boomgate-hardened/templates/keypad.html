@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Keypad • Mildura Boom Gate</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background: #f1f3f5;
+      color: #212529;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .keypad-container { max-width: 460px; margin: 0 auto; padding: 14px; }
+    .display {
+      font-size: 2.9rem;
+      font-weight: 700;
+      letter-spacing: .5rem;
+      background: #fff;
+      border: 2px solid #dee2e6;
+      height: 82px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 16px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .key {
+      font-size: 1.7rem;
+      font-weight: 700;
+      height: 80px;
+      border-radius: 16px;
+      background: #fff;
+      color: #212529;
+      border: 2px solid #dee2e6;
+      transition: all .05s ease;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .key:active {
+      transform: scale(0.96);
+      background: #e9ecef;
+      border-color: #adb5bd;
+    }
+    .key.enter {
+      background: #198754;
+      color: white;
+      border-color: #198754;
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+    .key.back {
+      background: #f8f9fa;
+    }
+    .status {
+      font-size: .9rem;
+      padding: .3rem .7rem;
+      border-radius: 999px;
+      background: #e9ecef;
+      color: #495057;
+    }
+    .status.open { background: #d1e7dd; color: #0f5132; font-weight: 600; }
+    .result { min-height: 44px; font-weight: 600; font-size: 1.05rem; }
+    .footer-note { font-size: .72rem; color: #6c757d; }
+  </style>
+</head>
+<body>
+  <div class="keypad-container pt-3">
+    <div class="d-flex justify-content-between align-items-center mb-2 px-1">
+      <div>
+        <span class="fw-bold">Mildura WMC</span>
+        <span class="text-muted">• Boom Gate</span>
+      </div>
+      <div id="status-pill" class="status">Checking…</div>
+    </div>
+
+    <div id="display" class="display">––––</div>
+
+    <div class="result text-center mb-2" id="result"></div>
+
+    <div class="row g-2">
+      <!-- Row 1 -->
+      <div class="col-4"><button class="btn key w-100" data-digit="1">1</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="2">2</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="3">3</button></div>
+
+      <!-- Row 2 -->
+      <div class="col-4"><button class="btn key w-100" data-digit="4">4</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="5">5</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="6">6</button></div>
+
+      <!-- Row 3 -->
+      <div class="col-4"><button class="btn key w-100" data-digit="7">7</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="8">8</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="9">9</button></div>
+
+      <!-- Row 4 -->
+      <div class="col-4"><button class="btn key w-100 back" id="backspace">⌫</button></div>
+      <div class="col-4"><button class="btn key w-100" data-digit="0">0</button></div>
+      <div class="col-4"><button class="btn key w-100 enter" id="enter">ENTER</button></div>
+    </div>
+
+    <div class="text-center mt-3">
+      <a href="/" class="text-muted small text-decoration-none">Admin dashboard</a>
+      <div class="footer-note mt-2">Physical Sebury keypad also works • Gate opens for 1.5 seconds</div>
+    </div>
+  </div>
+
+  <script>
+    const display = document.getElementById('display');
+    const resultEl = document.getElementById('result');
+    const statusPill = document.getElementById('status-pill');
+    let pin = '';
+
+    function updateDisplay() {
+      display.textContent = pin.length ? pin.replace(/./g, '•').padEnd(4, '–') : '––––';
+    }
+
+    function appendDigit(d) {
+      if (pin.length < 8) {
+        pin += d;
+        updateDisplay();
+        resultEl.textContent = '';
+      }
+    }
+
+    function backspace() {
+      pin = pin.slice(0, -1);
+      updateDisplay();
+      resultEl.textContent = '';
+    }
+
+    async function submitPin() {
+      if (!pin) return;
+      resultEl.textContent = 'Checking…';
+      resultEl.className = 'result text-center mb-2 text-warning';
+
+      try {
+        const res = await fetch('/gate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin })
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          resultEl.textContent = '✓ ' + (data.name || 'Access granted');
+          resultEl.className = 'result text-center mb-2 text-success';
+          // Clear after success
+          setTimeout(() => { pin = ''; updateDisplay(); resultEl.textContent = ''; }, 1600);
+        } else {
+          resultEl.textContent = '✗ ' + (data.message || 'Access denied');
+          resultEl.className = 'result text-center mb-2 text-danger';
+          setTimeout(() => { resultEl.textContent = ''; }, 2200);
+        }
+      } catch (e) {
+        resultEl.textContent = '✗ Network error';
+        resultEl.className = 'result text-center mb-2 text-danger';
+        setTimeout(() => { resultEl.textContent = ''; }, 2200);
+      }
+    }
+
+    // Button handlers
+    document.querySelectorAll('.key[data-digit]').forEach(btn => {
+      btn.addEventListener('click', () => appendDigit(btn.dataset.digit));
+    });
+    document.getElementById('backspace').addEventListener('click', backspace);
+    document.getElementById('enter').addEventListener('click', submitPin);
+
+    // Keyboard support (for testing on desktop)
+    document.addEventListener('keydown', (e) => {
+      if (e.key >= '0' && e.key <= '9') appendDigit(e.key);
+      if (e.key === 'Backspace') backspace();
+      if (e.key === 'Enter') submitPin();
+    });
+
+    // Status polling
+    async function pollStatus() {
+      try {
+        const r = await fetch('/api/status');
+        const s = await r.json();
+        if (s.auto_open) {
+          statusPill.textContent = 'OPEN • ' + s.auto_name;
+          statusPill.className = 'status open';
+        } else {
+          statusPill.textContent = 'PIN MODE';
+          statusPill.className = 'status';
+        }
+      } catch (e) {
+        statusPill.textContent = 'OFFLINE';
+        statusPill.className = 'status';
+        statusPill.style.background = '#f8d7da';
+        statusPill.style.color = '#842029';
+      }
+    }
+    pollStatus();
+    setInterval(pollStatus, 8000);
+  </script>
+</body>
+</html>
