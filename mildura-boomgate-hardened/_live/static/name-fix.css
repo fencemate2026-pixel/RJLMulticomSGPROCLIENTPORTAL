@@ -1,0 +1,15 @@
+/* Force readable dark names on light cards */
+.uname,
+.auth-person-name,
+.sched-name,
+.card-title,
+table td,
+table th,
+.log-table td,
+.log-table th {
+  color: #0f172a !important;
+}
+/* Keep status badges coloured */
+.badge.ok, .badge.fail, .badge.auto, .badge.rem {
+  color: #fff !important;
+}

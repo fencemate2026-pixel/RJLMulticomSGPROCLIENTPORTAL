@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Gate Access</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #0f1117; --card:   #1a1d27; --key: #232636;
+  --border: #2c2f3e; --accent: #f97316;
+  --green:  #22c55e; --red: #ef4444; --text: #e2e8f0; --muted: #64748b;
+}
+body {
+  background: var(--bg); color: var(--text); min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  padding: 1rem;
+}
+.pad {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 18px; padding: 2rem 1.75rem 1.5rem;
+  width: 100%; max-width: 340px;
+}
+.site {
+  text-align: center; font-size: .78rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .1em; margin-bottom: .35rem;
+}
+
+/* ── Auto-open mode screen ── */
+.auto-screen {
+  display: none; text-align: center; padding: 1.5rem 0;
+}
+.auto-screen.show { display: block; }
+.auto-icon { font-size: 3rem; margin-bottom: .75rem; }
+.auto-msg  { font-size: 1.1rem; font-weight: 700; color: var(--green); margin-bottom: .4rem; }
+.auto-sub  { font-size: .82rem; color: var(--muted); margin-bottom: 1.25rem; }
+.btn-enter {
+  width: 100%; padding: 1rem; background: var(--green); color: #000;
+  border: none; border-radius: 12px; font-size: 1.1rem; font-weight: 800;
+  cursor: pointer; letter-spacing: .04em;
+}
+.btn-enter:active { opacity: .85; }
+
+/* ── PIN mode screen ── */
+.pin-screen { display: block; }
+.pin-screen.hide { display: none; }
+
+.display {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; height: 64px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 1.8rem; letter-spacing: .5rem;
+  margin: .75rem 0 .5rem; color: var(--accent);
+  transition: background .25s, border-color .25s, color .25s;
+}
+.display.ok   { background: #14532d; border-color: var(--green); color: var(--green); }
+.display.fail { background: #450a0a; border-color: var(--red);   color: var(--red); }
+.status {
+  text-align: center; font-size: .88rem; min-height: 1.3rem;
+  margin-bottom: 1.25rem; color: var(--muted); transition: color .2s;
+}
+.status.ok   { color: var(--green); font-weight: 600; }
+.status.fail { color: var(--red);   font-weight: 600; }
+
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; }
+.key {
+  background: var(--key); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); font-size: 1.6rem;
+  font-weight: 600; height: 72px; cursor: pointer;
+  transition: background .1s, transform .07s;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.key:active { background: #2e3347; transform: scale(.93); }
+.key.clear  { color: var(--red);    font-size: 1rem; font-weight: 700; }
+.key.enter  { background: var(--accent); color: #fff; font-size: 1rem; font-weight: 700; }
+.key.enter[data-disabled="true"] { opacity: .35; cursor: default; }
+.key.enter:active { transform: none; opacity: .8; }
+
+.back {
+  display: block; text-align: center; margin-top: 1.4rem;
+  color: var(--muted); font-size: .78rem; text-decoration: none;
+}
+.back:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="pad">
+  <p class="site">Mildura Working Man's Club</p>
+
+  <!-- Auto-open mode -->
+  <div class="auto-screen" id="autoScreen">
+    <div class="auto-icon">🟢</div>
+    <div class="auto-msg">Gate is Open</div>
+    <div class="auto-sub" id="autoSubtext">Auto-open schedule active</div>
+    <button class="btn-enter" onclick="autoOpen()">ENTER</button>
+  </div>
+
+  <!-- PIN mode -->
+  <div class="pin-screen" id="pinScreen">
+    <div class="display" id="disp"><span id="dispInner">——</span></div>
+    <p class="status" id="status">Enter PIN to open gate</p>
+    <div class="grid">
+      <button class="key" onclick="press('1')">1</button>
+      <button class="key" onclick="press('2')">2</button>
+      <button class="key" onclick="press('3')">3</button>
+      <button class="key" onclick="press('4')">4</button>
+      <button class="key" onclick="press('5')">5</button>
+      <button class="key" onclick="press('6')">6</button>
+      <button class="key" onclick="press('7')">7</button>
+      <button class="key" onclick="press('8')">8</button>
+      <button class="key" onclick="press('9')">9</button>
+      <button class="key clear" onclick="press('C')">CLR</button>
+      <button class="key" onclick="press('0')">0</button>
+      <button class="key enter" id="enterBtn" data-disabled="true" onclick="submit()">OPEN</button>
+    </div>
+  </div>
+
+  <a class="back" href="/">← Admin</a>
+</div>
+
+<script>
+const MAX = 8;
+let pin = '', locked = false;
+
+const disp     = document.getElementById('disp');
+const dispInner= document.getElementById('dispInner');
+const statusEl = document.getElementById('status');
+const enterBtn = document.getElementById('enterBtn');
+const autoScr  = document.getElementById('autoScreen');
+const pinScr   = document.getElementById('pinScreen');
+const autoSub  = document.getElementById('autoSubtext');
+
+// Poll status every 30s to switch modes
+async function checkStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    if (d.auto_open) {
+      autoScr.classList.add('show');
+      pinScr.classList.add('hide');
+      autoSub.textContent = d.auto_name || 'Auto-open schedule active';
+    } else {
+      autoScr.classList.remove('show');
+      pinScr.classList.remove('hide');
+    }
+  } catch {}
+}
+checkStatus();
+setInterval(checkStatus, 30000);
+
+async function autoOpen() {
+  try {
+    await fetch('/gate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin: ''})
+    });
+  } catch {}
+}
+
+function updateDisplay() {
+  dispInner.textContent = pin.length ? '●'.repeat(pin.length) : '——';
+  const dis = pin.length < 4;
+  enterBtn.dataset.disabled = dis;
+  enterBtn.style.opacity = dis ? '.35' : '1';
+  enterBtn.style.cursor  = dis ? 'default' : 'pointer';
+}
+
+function press(k) {
+  if (locked) return;
+  if (k === 'C') {
+    pin = '';
+    disp.className = 'display';
+    statusEl.className = 'status';
+    statusEl.textContent = 'Enter PIN to open gate';
+    updateDisplay();
+    return;
+  }
+  if (pin.length < MAX) { pin += k; updateDisplay(); }
+}
+
+async function submit() {
+  if (locked || pin.length < 4) return;
+  locked = true;
+  statusEl.textContent = '…';
+  statusEl.className = 'status';
+  try {
+    const res  = await fetch('/gate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      disp.className = 'display ok'; dispInner.textContent = '✓';
+      statusEl.className = 'status ok';
+      statusEl.textContent = `Welcome, ${data.name}`;
+      pin = ''; setTimeout(reset, 3000);
+    } else {
+      disp.className = 'display fail'; dispInner.textContent = '✗';
+      statusEl.className = 'status fail';
+      statusEl.textContent = data.message || 'Access denied';
+      pin = ''; setTimeout(reset, 2000);
+    }
+  } catch {
+    statusEl.className = 'status fail';
+    statusEl.textContent = 'Network error';
+    pin = ''; setTimeout(reset, 2000);
+  }
+}
+
+function reset() {
+  locked = false;
+  disp.className = 'display';
+  statusEl.className = 'status';
+  statusEl.textContent = 'Enter PIN to open gate';
+  updateDisplay();
+}
+
+updateDisplay();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+[Unit]
+Description=RJL Maintenance portal heartbeat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rjl-portal/portal_sync.py
+Restart=always
+RestartSec=30
+User=root
+EnvironmentFile=/etc/rjl-portal.env
+
+[Install]
+WantedBy=multi-user.target

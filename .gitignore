@@ -19,3 +19,7 @@ local.properties
 *.local.env
 firmware/**/wifi_secrets.h
 
+
+.local/
+mildura-boomgate-hardened/.flask_secret
+mildura-boomgate-hardened/*.db*

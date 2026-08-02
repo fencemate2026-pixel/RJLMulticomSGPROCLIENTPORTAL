@@ -115,6 +115,7 @@ Production builds must not contain:
 | [docs/GO_LIVE.md](docs/GO_LIVE.md) | Go-live checklist |
 | [docs/ESP32_GSM_API.md](docs/ESP32_GSM_API.md) | ESP32 GSM API |
 | [docs/GSM-ESP32-COMMERCIAL.md](docs/GSM-ESP32-COMMERCIAL.md) | Commercial GSM controller |
+| [docs/MILDURA_PI_FULL_AUDIT.md](docs/MILDURA_PI_FULL_AUDIT.md) | Mildura Pi full audit + fixes |
 
 ## Firmware
 
