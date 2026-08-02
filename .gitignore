@@ -23,3 +23,4 @@ firmware/**/wifi_secrets.h
 .local/
 mildura-boomgate-hardened/.flask_secret
 mildura-boomgate-hardened/*.db*
+__pycache__/
