@@ -1,16 +1,15 @@
 # Mildura Pi — Full System Audit (2026-08-02)
 
 > **DO NOT DEPLOY** the `mildura-boomgate-hardened/` tree to the live Pi.
-> It is a reference rewrite from offline snapshots only. The live Pi already
-> has a more advanced `app.py` than those snapshots (see
-> `scripts/patch_mildura_pulse_force_off.py`, which expects live helpers like
-> `hold_should_be_on` / `_relay_lock`). Blind deploy risks regressing working
-> gate behaviour.
 >
-> **Next real move:** get Tailscale SSH credentials into `.local/mildura.env`,
-> run a **read-only** live audit (`scripts/full_mildura_pi_audit.py`), pull a
-> copy of the live `app.py` / `database.py` / unit file, diff against this
-> report, then apply **surgical** patches only (never a full tree replace).
+> **Primary symptom (live):** stuck-open is **guaranteed on the first PIN/AP
+> pulse after idle since ~01:30 AEST** (ORO hold ends ~01:40). That signature
+> points at Roger AP dry-contact “cold contact” after hours idle — not a
+> random software race. See [`MILDURA_ROGER_AP_COLD_CONTACT.md`](MILDURA_ROGER_AP_COLD_CONTACT.md).
+>
+> **Next real move:** SSH in around the nightly close, tail the journal, catch
+> that first post-close pulse in real time (optionally meter AP). Ask whether a
+> manual-close + PIN **retry** usually works. Do **not** replace `app.py`.
 
 Scope: Raspberry Pi boom-gate stack for Mildura Working Man's Club
 (`mildura-boomgate` service, Wiegand keypad, ORO hold relay, Flask dashboard,
