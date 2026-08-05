@@ -483,23 +483,36 @@ exports.gsmDeviceApi = (0, https_1.onRequest)({
                 .createHash("sha256")
                 .update(JSON.stringify(callers))
                 .digest("hex");
-            // SMS jobs optional — never fail the whitelist if queue/index missing
+            // SMS jobs optional — never fail the whitelist if queue/index missing.
+            // Query by status (not just accountId+limit): terminal sent/failed docs
+            // are never deleted, so a bare limit(50) permanently starves newer jobs
+            // once history fills the window (welcome SMS / campaigns).
             let smsJobs = [];
             try {
-                const all = await db
-                    .collection("gsmSmsQueue")
-                    .where("accountId", "==", accountId)
-                    .limit(50)
-                    .get();
-                const eligibleJobs = all.docs
+                const queueRef = db.collection("gsmSmsQueue");
+                const [queuedSnap, sendingSnap] = await Promise.all([
+                    queueRef
+                        .where("accountId", "==", accountId)
+                        .where("deviceId", "==", deviceId)
+                        .where("status", "==", "queued")
+                        .limit(50)
+                        .get(),
+                    queueRef
+                        .where("accountId", "==", accountId)
+                        .where("deviceId", "==", deviceId)
+                        .where("status", "==", "sending")
+                        .limit(50)
+                        .get(),
+                ]);
+                const allDocs = [...queuedSnap.docs, ...sendingSnap.docs];
+                const eligibleJobs = allDocs
                     .map((d) => {
                     const x = d.data();
                     const claimedAtMs = x.claimedAt?.toMillis?.() ?? 0;
                     const staleSending = x.status === "sending" &&
                         (claimedAtMs === 0 || now - claimedAtMs >= SMS_CLAIM_LEASE_MS);
                     const nextAttemptAtMs = x.nextAttemptAt?.toMillis?.() ?? 0;
-                    if (x.deviceId !== deviceId ||
-                        (x.status !== "queued" && !staleSending) ||
+                    if ((x.status !== "queued" && !staleSending) ||
                         nextAttemptAtMs > now ||
                         Number(x.attemptCount || 0) >= SMS_MAX_ATTEMPTS) {
                         return null;
@@ -532,17 +545,19 @@ exports.gsmDeviceApi = (0, https_1.onRequest)({
             }
             let remoteCommands = [];
             try {
+                // Same starvation pattern as SMS: completed commands stay in the
+                // collection, so accountId+limit(20) eventually returns only history.
                 const commands = await db
                     .collection("gsmDeviceCommands")
                     .where("accountId", "==", accountId)
+                    .where("deviceId", "==", deviceId)
+                    .where("status", "==", "queued")
                     .limit(20)
                     .get();
                 remoteCommands = commands.docs.flatMap((doc) => {
                     const command = doc.data();
                     const expiresAt = command.expiresAt?.toMillis?.() ?? 0;
-                    if (command.deviceId !== deviceId ||
-                        command.status !== "queued" ||
-                        command.type !== "remote_gate_test" ||
+                    if (command.type !== "remote_gate_test" ||
                         expiresAt <= now)
                         return [];
                     return [{ commandId: doc.id, type: command.type, expiresAt }];
