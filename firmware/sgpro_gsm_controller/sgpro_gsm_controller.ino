@@ -1475,6 +1475,9 @@ void handleIncomingCaller(const String &rawNumber, const char *source) {
     Serial.printf("CALL: whitelist rejected %s reason=%s\n", e164.c_str(), reason);
     relayQueuedAfterHangup = false;
     queueCallEvent(e164, false, false, reason, -1);
+    // Lockout clears ringPending/hasHandledCall when it ends. Without this,
+    // rejected calls leave hasHandledCall stuck true and block all later opens.
+    startCallLockout();
     hangUpCall();
     return;
   }
@@ -1570,6 +1573,7 @@ void processModemLine(const String &rawLine, bool framingCorrupted) {
         hasHandledCall = true;
         Serial.println("CALL: whitelist rejected reason=HIDDEN_PRIVATE");
         queueCallEvent("", false, false, "HIDDEN_PRIVATE", -1);
+        startCallLockout();
         hangUpCall();
       }
     } else if (!cacheIncomingCaller(clipNumber, "CLIP") &&
@@ -1577,6 +1581,7 @@ void processModemLine(const String &rawLine, bool framingCorrupted) {
       hasHandledCall = true;
       Serial.println("CALL: whitelist rejected reason=MALFORMED");
       queueCallEvent("", false, false, "MALFORMED", -1);
+      startCallLockout();
       hangUpCall();
     }
   } else if (incomingClcc) {
@@ -1626,6 +1631,10 @@ void recoverIncomingCall() {
   if (elapsed >= CALL_FAILSAFE_MS) {
     Serial.println("CALL: whitelist rejected reason=HIDDEN_PRIVATE");
     queueCallEvent("", false, false, "HIDDEN_PRIVATE", -1);
+    // Mark handled + lockout so failsafe does not re-CHUP forever and so the
+    // next real caller is accepted after CALL_LOCKOUT_MS.
+    hasHandledCall = true;
+    startCallLockout();
     hangUpCall();
     return;
   }
