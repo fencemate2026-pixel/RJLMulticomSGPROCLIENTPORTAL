@@ -102,11 +102,13 @@ app.post(
   unlockRateLimit,
   async (req, res) => {
     try {
-      const { secret, requiredScope = 'open_gate' } = req.body;
-      const result = await verifyAccessKey(
-        secret,
-        requiredScope
-      );
+      const { secret, requiredScope } = req.body || {};
+      // Coerce null/"" so clients cannot skip the open_gate scope check.
+      const scope =
+        typeof requiredScope === 'string' && requiredScope.trim()
+          ? requiredScope.trim()
+          : 'open_gate';
+      const result = await verifyAccessKey(secret, scope);
 
       if (!result.valid) {
         return res.status(401).json({
